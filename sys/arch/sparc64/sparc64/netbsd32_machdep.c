@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32_machdep.c,v 1.109 2015/11/26 13:15:34 martin Exp $	*/
+/*	$NetBSD: netbsd32_machdep.c,v 1.111 2018/11/27 14:09:54 maxv Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001 Matthew R. Green
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_machdep.c,v 1.109 2015/11/26 13:15:34 martin Exp $");
+__KERNEL_RCSID(0, "$NetBSD: netbsd32_machdep.c,v 1.111 2018/11/27 14:09:54 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -212,6 +212,7 @@ netbsd32_sendsig_sigcontext(const ksiginfo_t *ksi, const sigset_t *mask)
 	 * and then copy it out.  We probably ought to just build it
 	 * directly in user space....
 	 */
+	memset(&sf, 0, sizeof(sf));
 	sf.sf_signo = sig;
 	sf.sf_code = (u_int)ksi->ksi_trap;
 #if defined(COMPAT_SUNOS) || defined(MODULAR)
@@ -624,16 +625,15 @@ netbsd32_process_read_regs(struct lwp *l, struct reg32 *regs)
 	return (0);
 }
 
-#if 0
 int
 netbsd32_process_write_regs(struct lwp *l, const struct reg32 *regs)
 {
-	struct trapframe64* tf = p->p_md.md_tf;
+	struct trapframe64* tf = l->l_md.md_tf;
 	int i;
 
 	tf->tf_pc = regs->r_pc;
 	tf->tf_npc = regs->r_npc;
-	tf->tf_y = regs->r_pc;
+	tf->tf_y = regs->r_y;
 	for (i = 0; i < 8; i++) {
 		tf->tf_global[i] = regs->r_global[i];
 		tf->tf_out[i] = regs->r_out[i];
@@ -643,7 +643,6 @@ netbsd32_process_write_regs(struct lwp *l, const struct reg32 *regs)
 		PSRCC_TO_TSTATE(regs->r_psr);
 	return (0);
 }
-#endif
 
 int
 netbsd32_process_read_fpregs(struct lwp *l, struct fpreg32 *regs, size_t *sz)
@@ -661,9 +660,9 @@ netbsd32_process_read_fpregs(struct lwp *l, struct fpreg32 *regs, size_t *sz)
 	return 0;
 }
 
-#if 0
 int
-netbsd32_process_write_fpregs(struct lwp *l, const struct fpreg32 *regs)
+netbsd32_process_write_fpregs(struct lwp *l, const struct fpreg32 *regs,
+    size_t sz)
 {
 	struct fpstate64	*statep;
 	int i;
@@ -678,7 +677,6 @@ netbsd32_process_write_fpregs(struct lwp *l, const struct fpreg32 *regs)
 
 	return 0;
 }
-#endif
 
 /*
  * 32-bit version of cpu_coredump.

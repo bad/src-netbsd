@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap.h,v 1.117 2014/04/21 19:12:11 christos Exp $	*/
+/*	$NetBSD: pmap.h,v 1.121 2018/11/19 20:44:51 maxv Exp $	*/
 
 /*
  * Copyright (c) 1997 Charles D. Cranor and Washington University.
@@ -267,7 +267,8 @@
 #endif  /* !XEN */
 #define NPDPG			(PAGE_SIZE / sizeof (pd_entry_t))
 
-#define PTP_MASK_INITIALIZER	{ L1_FRAME, L2_FRAME }
+#define PTP_MASK_INITIALIZER	{ L1_MASK, L2_MASK }
+#define PTP_FRAME_INITIALIZER	{ L1_FRAME, L2_FRAME }
 #define PTP_SHIFT_INITIALIZER	{ L1_SHIFT, L2_SHIFT }
 #define NKPTP_INITIALIZER	{ NKL1_START_ENTRIES, NKL2_START_ENTRIES }
 #define NKPTPMAX_INITIALIZER	{ NKL1_MAX_ENTRIES, NKL2_MAX_ENTRIES }
@@ -283,16 +284,6 @@
 #define PG_W		PG_AVAIL1	/* "wired" mapping */
 #define PG_PVLIST	PG_AVAIL2	/* mapping has entry on pvlist */
 #define PG_X		PG_AVAIL3	/* executable mapping */
-
-/*
- * Number of PTE's per cache line.  4 byte pte, 32-byte cache line
- * Used to avoid false sharing of cache lines.
- */
-#ifdef PAE
-#define NPTECL		4
-#else
-#define NPTECL		8
-#endif
 
 #include <x86/pmap.h>
 
@@ -405,7 +396,6 @@ struct trapframe;
 struct pcb;
 
 int	pmap_exec_fixup(struct vm_map *, struct trapframe *, struct pcb *);
-void	pmap_ldt_cleanup(struct lwp *);
 
 #include <x86/pmap_pv.h>
 

@@ -1,4 +1,4 @@
-/* $NetBSD: params.c,v 1.28 2015/11/24 14:07:18 christos Exp $ */
+/* $NetBSD: params.c,v 1.30 2018/12/30 12:05:48 mlelstv Exp $ */
 
 /*-
  * Copyright (c) 2002, 2003 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
 
 #include <sys/cdefs.h>
 #ifndef lint
-__RCSID("$NetBSD: params.c,v 1.28 2015/11/24 14:07:18 christos Exp $");
+__RCSID("$NetBSD: params.c,v 1.30 2018/12/30 12:05:48 mlelstv Exp $");
 #endif
 
 #include <sys/types.h>
@@ -70,6 +70,7 @@ static struct crypto_defaults {
 	int	keylen;
 } crypto_defaults[] = {
 	{ "aes-cbc",		128 },
+	{ "aes-xts",		256 },
 	{ "3des-cbc",		192 },
 	{ "blowfish-cbc",	128 }
 };
@@ -157,6 +158,8 @@ params_filldefaults(struct params *p)
 	if (!p->ivmeth)
 		p->ivmeth = string_fromcharstar("encblkno1");
 	if (p->keylen == (size_t)-1) {
+		if (p->algorithm == NULL)
+			return -1;
 		i = crypt_defaults_lookup(string_tocharstar(p->algorithm));
 		if (i != (size_t)-1) {
 			p->keylen = crypto_defaults[i].keylen;

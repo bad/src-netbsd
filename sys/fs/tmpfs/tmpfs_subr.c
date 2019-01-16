@@ -1,4 +1,4 @@
-/*	$NetBSD: tmpfs_subr.c,v 1.101 2015/10/29 16:19:44 leot Exp $	*/
+/*	$NetBSD: tmpfs_subr.c,v 1.104 2019/01/01 10:06:54 hannken Exp $	*/
 
 /*
  * Copyright (c) 2005-2013 The NetBSD Foundation, Inc.
@@ -73,7 +73,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tmpfs_subr.c,v 1.101 2015/10/29 16:19:44 leot Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tmpfs_subr.c,v 1.104 2019/01/01 10:06:54 hannken Exp $");
 
 #include <sys/param.h>
 #include <sys/cprng.h>
@@ -177,7 +177,7 @@ tmpfs_loadvnode(struct mount *mp, struct vnode *vp,
  */
 int
 tmpfs_newvnode(struct mount *mp, struct vnode *dvp, struct vnode *vp,
-    struct vattr *vap, kauth_cred_t cred,
+    struct vattr *vap, kauth_cred_t cred, void *extra,
     size_t *key_len, const void **new_key)
 {
 	tmpfs_mount_t *tmp = VFS_TO_TMPFS(mp);
@@ -275,7 +275,7 @@ tmpfs_newvnode(struct mount *mp, struct vnode *dvp, struct vnode *vp,
 	case VREG:
 		/* Regular file.  Create an underlying UVM object. */
 		node->tn_spec.tn_reg.tn_aobj =
-		    uao_create(INT32_MAX - PAGE_SIZE, 0);
+		    uao_create(INT64_MAX - PAGE_SIZE, 0);
 		node->tn_spec.tn_reg.tn_aobj_pages = 0;
 		break;
 	default:
@@ -390,7 +390,7 @@ tmpfs_construct_node(vnode_t *dvp, vnode_t **vpp, struct vattr *vap,
 	}
 
 	/* Allocate a vnode that represents the new file. */
-	error = vcache_new(dvp->v_mount, dvp, vap, cnp->cn_cred, vpp);
+	error = vcache_new(dvp->v_mount, dvp, vap, cnp->cn_cred, NULL, vpp);
 	if (error) {
 		if (slink != NULL)
 			tmpfs_strname_free(tmp, slink, ssize);
@@ -1125,12 +1125,10 @@ tmpfs_chsize(vnode_t *vp, u_quad_t size, kauth_cred_t cred, lwp_t *l)
 	if (length < 0) {
 		return EINVAL;
 	}
-	if (node->tn_size == length) {
-		return 0;
-	}
 
 	/* Note: tmpfs_reg_resize() will raise NOTE_EXTEND and NOTE_ATTRIB. */
-	if ((error = tmpfs_reg_resize(vp, length)) != 0) {
+	if (node->tn_size != length &&
+	    (error = tmpfs_reg_resize(vp, length)) != 0) {
 		return error;
 	}
 	tmpfs_update(vp, TMPFS_UPDATE_CTIME | TMPFS_UPDATE_MTIME);

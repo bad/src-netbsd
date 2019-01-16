@@ -1,4 +1,4 @@
-/* $NetBSD: proc.h,v 1.1 2014/08/10 05:47:38 matt Exp $ */
+/* $NetBSD: proc.h,v 1.3 2018/12/27 09:55:27 mrg Exp $ */
 
 /*-
  * Copyright (c) 2014 The NetBSD Foundation, Inc.
@@ -35,9 +35,8 @@
 #ifdef __aarch64__
 
 struct mdlwp {
-	struct trapframe *md_utf;
-	struct trapframe *md_ktf;
 	void *md_onfault;
+	struct trapframe *md_utf;
 	uint64_t md_cpacr;
 	uint32_t md_flags;
 };

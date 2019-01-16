@@ -1,4 +1,4 @@
-/*	$NetBSD: machdep.c,v 1.285 2016/07/07 06:55:38 msaitoh Exp $ */
+/*	$NetBSD: machdep.c,v 1.291 2019/01/07 13:10:44 martin Exp $ */
 
 /*-
  * Copyright (c) 1996, 1997, 1998 The NetBSD Foundation, Inc.
@@ -71,13 +71,12 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.285 2016/07/07 06:55:38 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.291 2019/01/07 13:10:44 martin Exp $");
 
 #include "opt_ddb.h"
 #include "opt_multiprocessor.h"
 #include "opt_modular.h"
 #include "opt_compat_netbsd.h"
-#include "opt_compat_svr4.h"
 #include "opt_compat_sunos.h"
 
 #include <sys/param.h>
@@ -123,6 +122,7 @@ __KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.285 2016/07/07 06:55:38 msaitoh Exp $"
 #define _SPARC_BUS_DMA_PRIVATE
 #include <machine/autoconf.h>
 #include <sys/bus.h>
+#include <sys/kprintf.h>
 #include <machine/frame.h>
 #include <machine/cpu.h>
 #include <machine/pcb.h>
@@ -142,7 +142,7 @@ int bus_space_debug = 0; /* This may be used by macros elsewhere. */
 #define DPRINTF(l, s)
 #endif
 
-#if defined(COMPAT_16) || defined(COMPAT_SVR4) || defined(COMPAT_SVR4_32) || defined(COMPAT_SUNOS)
+#if defined(COMPAT_16) || defined(COMPAT_SUNOS)
 #ifdef DEBUG
 /* See <sparc64/sparc64/sigdebug.h> */
 int sigdebug = 0x0;
@@ -451,12 +451,12 @@ sendsig_siginfo(const ksiginfo_t *ksi, const sigset_t *mask)
 	/* Allocate an aligned sigframe */
 	fp = (void *)((u_long)(fp - 1) & ~0x0f);
 
+	memset(&uc, 0, sizeof(uc));
 	uc.uc_flags = _UC_SIGMASK |
 	    ((l->l_sigstk.ss_flags & SS_ONSTACK)
 		? _UC_SETSTACK : _UC_CLRSTACK);
 	uc.uc_sigmask = *mask;
 	uc.uc_link = l->l_ctxlink;
-	memset(&uc.uc_stack, 0, sizeof(uc.uc_stack));
 
 	sendsig_reset(l, sig);
 	mutex_exit(p->p_lock);
@@ -756,7 +756,8 @@ dumpsys(void)
 
 			/* print out how many MBs we still have to dump */
 			if ((todo % (1024*1024)) == 0)
-				printf_nolog("\r%6" PRIu64 " M ",
+				printf_flags(TOCONS|NOTSTAMP, 
+				    "\r%6" PRIu64 " M ",
 				    todo / (1024*1024));
 			for (off = 0; off < n; off += PAGE_SIZE)
 				pmap_kenter_pa(dumpspace+off, maddr+off,
@@ -791,7 +792,8 @@ dumpsys(void)
 		break;
 
 	case 0:
-		printf("\rdump succeeded\n");
+		printf_flags(TOCONS|NOTSTAMP, "\r           ");
+		printf("\ndump succeeded\n");
 		break;
 
 	default:
@@ -1018,7 +1020,7 @@ _bus_dmamap_load(bus_dma_tag_t t, bus_dmamap_t map, void *sbuf,
 	while (sgsize > 0) {
 		paddr_t pa;
 	
-		incr = min(sgsize, incr);
+		incr = uimin(sgsize, incr);
 
 		(void) pmap_extract(pmap_kernel(), vaddr, &pa);
 		if (map->dm_segs[i].ds_len == 0)
@@ -1079,7 +1081,7 @@ _bus_dmamap_load_mbuf(bus_dma_tag_t t, bus_dmamap_t map, struct mbuf *m,
 			long incr;
 
 			incr = PAGE_SIZE - (vaddr & PGOFSET);
-			incr = min(buflen, incr);
+			incr = uimin(buflen, incr);
 
 			if (pmap_extract(pmap_kernel(), vaddr, &pa) == FALSE) {
 #ifdef DIAGNOSTIC
@@ -1207,7 +1209,7 @@ _bus_dmamap_load_uio(bus_dma_tag_t t, bus_dmamap_t map, struct uio *uio,
 			paddr_t pa;
 			long incr;
 
-			incr = min(buflen, PAGE_SIZE);
+			incr = uimin(buflen, PAGE_SIZE);
 			(void) pmap_extract(pm, vaddr, &pa);
 			buflen -= incr;
 			vaddr += incr;
@@ -2293,6 +2295,9 @@ sparc_bus_map(bus_space_tag_t t, bus_addr_t addr, bus_size_t size,
 	if (!(flags & BUS_SPACE_MAP_CACHEABLE))
 		pm_flags |= PMAP_NC;
 
+	if ((flags & BUS_SPACE_MAP_PREFETCHABLE))
+		pm_flags |= PMAP_WC;
+
 	if ((err = extent_alloc(io_space, size, PAGE_SIZE,
 		0, EX_NOWAIT|EX_BOUNDZERO, (u_long *)&v)))
 			panic("sparc_bus_map: cannot allocate io_space: %d", err);
@@ -2357,8 +2362,14 @@ paddr_t
 sparc_bus_mmap(bus_space_tag_t t, bus_addr_t paddr, off_t off, int prot,
 	int flags)
 {
+	paddr_t pa;
 	/* Devices are un-cached... although the driver should do that */
-	return ((paddr+off)|PMAP_NC);
+	pa = (paddr + off) | PMAP_NC;
+	if (flags & BUS_SPACE_MAP_LITTLE)
+		pa |= PMAP_LITTLE;
+	if (flags & BUS_SPACE_MAP_PREFETCHABLE)
+		pa |= PMAP_WC;	
+	return pa;
 }
 
 

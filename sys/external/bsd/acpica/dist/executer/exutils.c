@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -73,7 +73,6 @@ AcpiExDigitsNeeded (
     UINT32                  Base);
 
 
-#ifndef ACPI_NO_METHOD_EXECUTION
 /*******************************************************************************
  *
  * FUNCTION:    AcpiExEnterInterpreter
@@ -102,6 +101,11 @@ AcpiExEnterInterpreter (
     if (ACPI_FAILURE (Status))
     {
         ACPI_ERROR ((AE_INFO, "Could not acquire AML Interpreter mutex"));
+    }
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        ACPI_ERROR ((AE_INFO, "Could not acquire AML Namespace mutex"));
     }
 
     return_VOID;
@@ -141,6 +145,11 @@ AcpiExExitInterpreter (
     ACPI_FUNCTION_TRACE (ExExitInterpreter);
 
 
+    Status = AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        ACPI_ERROR ((AE_INFO, "Could not release AML Namespace mutex"));
+    }
     Status = AcpiUtReleaseMutex (ACPI_MTX_INTERPRETER);
     if (ACPI_FAILURE (Status))
     {
@@ -497,4 +506,3 @@ AcpiIsValidSpaceId (
     return (TRUE);
 }
 
-#endif

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -108,14 +108,16 @@
 #define ACPI_LV_RESOURCES           0x00010000
 #define ACPI_LV_USER_REQUESTS       0x00020000
 #define ACPI_LV_PACKAGE             0x00040000
-#define ACPI_LV_VERBOSITY1          0x0007FF40 | ACPI_LV_ALL_EXCEPTIONS
+#define ACPI_LV_EVALUATION          0x00080000
+#define ACPI_LV_VERBOSITY1          0x000FFF40 | ACPI_LV_ALL_EXCEPTIONS
 
 /* Trace verbosity level 2 [Function tracing and memory allocation] */
 
 #define ACPI_LV_ALLOCATIONS         0x00100000
 #define ACPI_LV_FUNCTIONS           0x00200000
 #define ACPI_LV_OPTIMIZATIONS       0x00400000
-#define ACPI_LV_VERBOSITY2          0x00700000 | ACPI_LV_VERBOSITY1
+#define ACPI_LV_PARSE_TREES         0x00800000
+#define ACPI_LV_VERBOSITY2          0x00F00000 | ACPI_LV_VERBOSITY1
 #define ACPI_LV_ALL                 ACPI_LV_VERBOSITY2
 
 /* Trace verbosity level 3 [Threading, I/O, and Interrupts] */
@@ -167,6 +169,7 @@
 #define ACPI_DB_TABLES              ACPI_DEBUG_LEVEL (ACPI_LV_TABLES)
 #define ACPI_DB_FUNCTIONS           ACPI_DEBUG_LEVEL (ACPI_LV_FUNCTIONS)
 #define ACPI_DB_OPTIMIZATIONS       ACPI_DEBUG_LEVEL (ACPI_LV_OPTIMIZATIONS)
+#define ACPI_DB_PARSE_TREES         ACPI_DEBUG_LEVEL (ACPI_LV_PARSE_TREES)
 #define ACPI_DB_VALUES              ACPI_DEBUG_LEVEL (ACPI_LV_VALUES)
 #define ACPI_DB_OBJECTS             ACPI_DEBUG_LEVEL (ACPI_LV_OBJECTS)
 #define ACPI_DB_ALLOCATIONS         ACPI_DEBUG_LEVEL (ACPI_LV_ALLOCATIONS)
@@ -175,6 +178,7 @@
 #define ACPI_DB_INTERRUPTS          ACPI_DEBUG_LEVEL (ACPI_LV_INTERRUPTS)
 #define ACPI_DB_USER_REQUESTS       ACPI_DEBUG_LEVEL (ACPI_LV_USER_REQUESTS)
 #define ACPI_DB_PACKAGE             ACPI_DEBUG_LEVEL (ACPI_LV_PACKAGE)
+#define ACPI_DB_EVALUATION          ACPI_DEBUG_LEVEL (ACPI_LV_EVALUATION)
 #define ACPI_DB_MUTEX               ACPI_DEBUG_LEVEL (ACPI_LV_MUTEX)
 #define ACPI_DB_EVENTS              ACPI_DEBUG_LEVEL (ACPI_LV_EVENTS)
 
@@ -182,7 +186,7 @@
 
 /* Defaults for DebugLevel, debug and normal */
 
-#define ACPI_DEBUG_DEFAULT          (ACPI_LV_INIT | ACPI_LV_DEBUG_OBJECT | ACPI_LV_REPAIR)
+#define ACPI_DEBUG_DEFAULT          (ACPI_LV_INIT | ACPI_LV_DEBUG_OBJECT | ACPI_LV_EVALUATION | ACPI_LV_REPAIR)
 #define ACPI_NORMAL_DEFAULT         (ACPI_LV_INIT | ACPI_LV_DEBUG_OBJECT | ACPI_LV_REPAIR)
 #define ACPI_DEBUG_ALL              (ACPI_LV_AML_DISASSEMBLE | ACPI_LV_ALL_EXCEPTIONS | ACPI_LV_ALL)
 
@@ -357,7 +361,7 @@
 
 #define ACPI_TRACE_ENTRY(Name, Function, Type, Param) \
     ACPI_FUNCTION_NAME (Name) \
-    Function (ACPI_DEBUG_PARAMETERS, (const Type) (Param))
+    Function (ACPI_DEBUG_PARAMETERS, (Type) (Param))
 
 /* The actual entry trace macros */
 
@@ -366,10 +370,10 @@
     AcpiUtTrace (ACPI_DEBUG_PARAMETERS)
 
 #define ACPI_FUNCTION_TRACE_PTR(Name, Pointer) \
-    ACPI_TRACE_ENTRY (Name, AcpiUtTracePtr, void *, Pointer)
+    ACPI_TRACE_ENTRY (Name, AcpiUtTracePtr, const void *, Pointer)
 
 #define ACPI_FUNCTION_TRACE_U32(Name, Value) \
-    ACPI_TRACE_ENTRY (Name, AcpiUtTraceU32, UINT32, Value)
+    ACPI_TRACE_ENTRY (Name, AcpiUtTraceU32, const UINT32, Value)
 
 #define ACPI_FUNCTION_TRACE_STR(Name, String) \
     ACPI_TRACE_ENTRY (Name, AcpiUtTraceStr, const char *, String)

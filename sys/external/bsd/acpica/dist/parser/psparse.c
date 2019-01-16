@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -56,6 +56,7 @@
 #include "acdispat.h"
 #include "amlcode.h"
 #include "acinterp.h"
+#include "acnamesp.h"
 
 #define _COMPONENT          ACPI_PARSER
         ACPI_MODULE_NAME    ("psparse")
@@ -114,7 +115,7 @@ AcpiPsPeekOpcode (
     Aml = ParserState->Aml;
     Opcode = (UINT16) ACPI_GET8 (Aml);
 
-    if (Opcode == AML_EXTENDED_OP_PREFIX)
+    if (Opcode == AML_EXTENDED_PREFIX)
     {
         /* Extended opcode, get the second opcode byte */
 
@@ -218,7 +219,7 @@ AcpiPsCompleteThisOp (
                 (Op->Common.Parent->Common.AmlOpcode == AML_BUFFER_OP)       ||
                 (Op->Common.Parent->Common.AmlOpcode == AML_PACKAGE_OP)      ||
                 (Op->Common.Parent->Common.AmlOpcode == AML_BANK_FIELD_OP)   ||
-                (Op->Common.Parent->Common.AmlOpcode == AML_VAR_PACKAGE_OP))
+                (Op->Common.Parent->Common.AmlOpcode == AML_VARIABLE_PACKAGE_OP))
             {
                 ReplacementOp = AcpiPsAllocOp (
                     AML_INT_RETURN_VALUE_OP, Op->Common.Aml);
@@ -232,7 +233,7 @@ AcpiPsCompleteThisOp (
             {
                 if ((Op->Common.AmlOpcode == AML_BUFFER_OP) ||
                     (Op->Common.AmlOpcode == AML_PACKAGE_OP) ||
-                    (Op->Common.AmlOpcode == AML_VAR_PACKAGE_OP))
+                    (Op->Common.AmlOpcode == AML_VARIABLE_PACKAGE_OP))
                 {
                     ReplacementOp = AcpiPsAllocOp (Op->Common.AmlOpcode,
                         Op->Common.Aml);
@@ -467,7 +468,7 @@ AcpiPsParseAml (
 
     if (!WalkState->ParserState.Aml)
     {
-        return_ACPI_STATUS (AE_NULL_OBJECT);
+        return_ACPI_STATUS (AE_BAD_ADDRESS);
     }
 
     /* Create and initialize a new thread state */
@@ -528,6 +529,18 @@ AcpiPsParseAml (
             "Completed one call to walk loop, %s State=%p\n",
             AcpiFormatException (Status), WalkState));
 
+        if (WalkState->MethodPathname && WalkState->MethodIsNested)
+        {
+            /* Optional object evaluation log */
+
+            ACPI_DEBUG_PRINT_RAW ((ACPI_DB_EVALUATION, "%-26s:  %*s%s\n",
+                "   Exit nested method",
+                (WalkState->MethodNestingDepth + 1) * 3, " ",
+                &WalkState->MethodPathname[1]));
+
+            ACPI_FREE (WalkState->MethodPathname);
+            WalkState->MethodIsNested = FALSE;
+        }
         if (Status == AE_CTRL_TRANSFER)
         {
             /*
@@ -555,8 +568,19 @@ AcpiPsParseAml (
         {
             /* Either the method parse or actual execution failed */
 
-            ACPI_ERROR_METHOD ("Method parse/execution failed",
-                WalkState->MethodNode, NULL, Status);
+            AcpiExExitInterpreter ();
+            if (Status == AE_ABORT_METHOD)
+            {
+                AcpiNsPrintNodePathname (
+                    WalkState->MethodNode, "Method aborted:");
+                AcpiOsPrintf ("\n");
+            }
+            else
+            {
+                ACPI_ERROR_METHOD ("Method parse/execution failed",
+                    WalkState->MethodNode, NULL, Status);
+            }
+            AcpiExEnterInterpreter ();
 
             /* Check for possible multi-thread reentrancy problem */
 
@@ -589,7 +613,8 @@ AcpiPsParseAml (
          * cleanup to do
          */
         if (((WalkState->ParseFlags & ACPI_PARSE_MODE_MASK) ==
-            ACPI_PARSE_EXECUTE) ||
+            ACPI_PARSE_EXECUTE &&
+            !(WalkState->ParseFlags & ACPI_PARSE_MODULE_LEVEL)) ||
             (ACPI_FAILURE (Status)))
         {
             AcpiDsTerminateControlMethod (WalkState->MethodDesc, WalkState);

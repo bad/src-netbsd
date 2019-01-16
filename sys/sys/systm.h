@@ -1,4 +1,4 @@
-/*	$NetBSD: systm.h,v 1.271 2016/07/06 05:20:48 ozaki-r Exp $	*/
+/*	$NetBSD: systm.h,v 1.281 2019/01/07 13:09:47 martin Exp $	*/
 
 /*-
  * Copyright (c) 1982, 1988, 1991, 1993
@@ -42,6 +42,8 @@
 #if defined(_KERNEL_OPT)
 #include "opt_ddb.h"
 #include "opt_multiprocessor.h"
+#include "opt_gprof.h"
+#include "opt_kleak.h"
 #endif
 #if !defined(_KERNEL) && !defined(_STANDALONE)
 #include <stdbool.h>
@@ -82,7 +84,7 @@ extern int autoniceval;         /* proc priority after autonicetime */
 extern int selwait;		/* select timeout address */
 
 extern int maxmem;		/* max memory per process */
-extern int physmem;		/* physical memory */
+extern psize_t physmem;		/* physical memory */
 
 extern dev_t dumpdev;		/* dump device */
 extern dev_t dumpcdev;		/* dump device (character equivalent) */
@@ -126,6 +128,7 @@ extern struct sysent {		/* system call table */
 	uint32_t sy_return;	/* DTrace return ID for systrace. */
 } sysent[];
 extern int nsysent;
+extern const uint32_t sysent_nomodbits[];
 #endif
 
 #if	BYTE_ORDER == BIG_ENDIAN
@@ -182,6 +185,14 @@ enum hashtype {
 };
 
 #ifdef _KERNEL
+#define COND_SET_VALUE(dst, src, allow)	\
+	do {				\
+		if (allow)		\
+			dst = src;	\
+	} while (/*CONSTCOND*/0);
+
+
+bool	get_expose_address(struct proc *);
 void	*hashinit(u_int, enum hashtype, bool, u_long *);
 void	hashdone(void *, enum hashtype, u_long);
 int	seltrue(dev_t, int, struct lwp *);
@@ -194,13 +205,13 @@ void	aprint_naive(const char *, ...) __printflike(1, 2);
 void	aprint_verbose(const char *, ...) __printflike(1, 2);
 void	aprint_debug(const char *, ...) __printflike(1, 2);
 
-void	device_printf(device_t, const char *fmt, ...) __printflike(2, 3);
-
 void	aprint_normal_dev(device_t, const char *, ...) __printflike(2, 3);
 void	aprint_error_dev(device_t, const char *, ...) __printflike(2, 3);
 void	aprint_naive_dev(device_t, const char *, ...) __printflike(2, 3);
 void	aprint_verbose_dev(device_t, const char *, ...) __printflike(2, 3);
 void	aprint_debug_dev(device_t, const char *, ...) __printflike(2, 3);
+
+void	device_printf(device_t, const char *fmt, ...) __printflike(2, 3);
 
 struct ifnet;
 
@@ -228,6 +239,10 @@ int	snprintf(char *, size_t, const char *, ...) __printflike(3, 4);
 void	vprintf(const char *, va_list) __printflike(1, 0);
 
 int	vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
+
+void	vprintf_flags(int, const char *, va_list) __printflike(2, 0);
+
+void	printf_flags(int, const char *, ...) __printflike(2, 3);
 
 int	humanize_number(char *, size_t, uint64_t, const char *, int);
 
@@ -259,6 +274,18 @@ int	copyoutstr(const void *, void *, size_t, size_t *);
 int	copyin(const void *, void *, size_t);
 int	copyout(const void *, void *, size_t);
 
+#ifdef KLEAK
+#define copyout		kleak_copyout
+#define copyoutstr	kleak_copyoutstr
+int	kleak_copyout(const void *, void *, size_t);
+int	kleak_copyoutstr(const void *, void *, size_t, size_t *);
+void	kleak_fill_area(void *, size_t);
+void	kleak_fill_stack(void);
+#else
+#define kleak_fill_area(a, b)	__nothing
+#define kleak_fill_stack()	__nothing
+#endif
+
 #ifdef _KERNEL
 typedef	int	(*copyin_t)(const void *, void *, size_t);
 typedef int	(*copyout_t)(const void *, void *, size_t);
@@ -266,6 +293,7 @@ typedef int	(*copyout_t)(const void *, void *, size_t);
 
 int	copyin_proc(struct proc *, const void *, void *, size_t);
 int	copyout_proc(struct proc *, const void *, void *, size_t);
+int	copyin_pid(pid_t, const void *, void *, size_t);
 int	copyin_vmspace(struct vmspace *, const void *, void *, size_t);
 int	copyout_vmspace(struct vmspace *, const void *, void *, size_t);
 
