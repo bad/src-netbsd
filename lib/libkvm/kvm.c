@@ -1,4 +1,4 @@
-/*	$NetBSD: kvm.c,v 1.102 2016/03/29 06:51:40 mrg Exp $	*/
+/*	$NetBSD: kvm.c,v 1.104 2018/11/05 00:43:30 mrg Exp $	*/
 
 /*-
  * Copyright (c) 1989, 1992, 1993
@@ -38,7 +38,7 @@
 #if 0
 static char sccsid[] = "@(#)kvm.c	8.2 (Berkeley) 2/13/94";
 #else
-__RCSID("$NetBSD: kvm.c,v 1.102 2016/03/29 06:51:40 mrg Exp $");
+__RCSID("$NetBSD: kvm.c,v 1.104 2018/11/05 00:43:30 mrg Exp $");
 #endif
 #endif /* LIBC_SCCS and not lint */
 
@@ -255,6 +255,7 @@ _kvm_open(kvm_t *kd, const char *uf, const char *mf, const char *sf, int flag,
 	kd->fdalign = 1;
 	kd->iobuf = NULL;
 	kd->iobufsz = 0;
+	kd->errbuf[0] = '\0';
 
 	if (flag & KVM_NO_FILES) {
 		kd->alive = KVM_ALIVE_SYSCTL;
@@ -322,15 +323,6 @@ _kvm_open(kvm_t *kd, const char *uf, const char *mf, const char *sf, int flag,
 		strlcpy(kd->kernelname, uf, sizeof(kd->kernelname));
 	} else {
 		strlcpy(kd->kernelname, _PATH_KSYMS, sizeof(kd->kernelname));
-		/*
-		 * We're here because /dev/ksyms was opened
-		 * successfully.  However, we don't want to keep it
-		 * open, so we close it now.  Later, we will open
-		 * it again, since it will be the only case where
-		 * kd->nlfd is negative.
-		 */
-		close(kd->nlfd);
-		kd->nlfd = -1;
 	}
 
 	if ((kd->pmfd = open(mf, flag | O_CLOEXEC, 0)) < 0) {
@@ -769,32 +761,15 @@ kvm_close(kvm_t *kd)
 int
 kvm_nlist(kvm_t *kd, struct nlist *nl)
 {
-	int rv, nlfd;
-
-	/*
-	 * kd->nlfd might be negative when we get here, and in that
-	 * case that means that we're using /dev/ksyms.
-	 * So open it again, just for the time we retrieve the list.
-	 */
-	if (kd->nlfd < 0) {
-		nlfd = open(_PATH_KSYMS, O_RDONLY | O_CLOEXEC, 0);
-		if (nlfd < 0) {
-			_kvm_err(kd, 0, "failed to open %s", _PATH_KSYMS);
-			return (nlfd);
-		}
-	} else
-		nlfd = kd->nlfd;
+	int rv;
 
 	/*
 	 * Call the nlist(3) routines to retrieve the given namelist.
 	 */
-	rv = __fdnlist(nlfd, nl);
+	rv = __fdnlist(kd->nlfd, nl);
 
 	if (rv == -1)
 		_kvm_err(kd, 0, "bad namelist");
-
-	if (kd->nlfd < 0)
-		close(nlfd);
 
 	return (rv);
 }
@@ -877,8 +852,10 @@ kvm_read(kvm_t *kd, u_long kva, void *buf, size_t len)
 			off_t	foff;
 
 			cc = _kvm_kvatop(kd, (vaddr_t)kva, &pa);
-			if (cc == 0)
+			if (cc == 0) {
+				_kvm_err(kd, kd->program, "_kvm_kvatop(%lx)", kva);
 				return (-1);
+			}
 			if (cc > len)
 				cc = len;
 			foff = _kvm_pa2off(kd, pa);

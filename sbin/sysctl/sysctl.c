@@ -1,4 +1,4 @@
-/*	$NetBSD: sysctl.c,v 1.157 2015/12/13 14:24:47 christos Exp $ */
+/*	$NetBSD: sysctl.c,v 1.161 2018/10/30 19:41:21 kre Exp $ */
 
 /*-
  * Copyright (c) 2003 The NetBSD Foundation, Inc.
@@ -68,7 +68,7 @@ __COPYRIGHT("@(#) Copyright (c) 1993\
 #if 0
 static char sccsid[] = "@(#)sysctl.c	8.1 (Berkeley) 6/6/93";
 #else
-__RCSID("$NetBSD: sysctl.c,v 1.157 2015/12/13 14:24:47 christos Exp $");
+__RCSID("$NetBSD: sysctl.c,v 1.161 2018/10/30 19:41:21 kre Exp $");
 #endif
 #endif /* not lint */
 
@@ -128,8 +128,8 @@ static void canonicalize(const char *, char *);
 static void purge_tree(struct sysctlnode *);
 static void print_tree(int *, u_int, struct sysctlnode *, u_int, int, regex_t *,
     size_t *);
-static void write_number(int *, u_int, struct sysctlnode *, char *);
-static void write_string(int *, u_int, struct sysctlnode *, char *);
+static void write_number(int *, u_int, struct sysctlnode *, char *, bool);
+static void write_string(int *, u_int, struct sysctlnode *, char *, bool);
 static void display_number(const struct sysctlnode *, const char *,
 			   const void *, size_t, int);
 static void display_string(const struct sysctlnode *, const char *,
@@ -218,6 +218,9 @@ static const struct handlespec {
 	{ "/net/[^/]+/[^/]+/pcblist",		printother, NULL,
 						"netstat' or 'sockstat" },
 	{ "/net/(inet|inet6)/[^/]+/stats",	printother, NULL, "netstat"},
+	{ "/net/inet/(ipip|esp|ah|ipcomp)/.*_stats",
+						printother, NULL, "netstat"},
+	{ "/net/inet/ipsec/ipsecstats",		printother, NULL, "netstat"},
 	{ "/net/bpf/(stats|peers)",		printother, NULL, "netstat"},
 
 	{ "/net/inet.*/tcp.*/deb.*",		printother, NULL, "trpt" },
@@ -946,10 +949,10 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
 	case CTLTYPE_INT:
 	case CTLTYPE_BOOL:
 	case CTLTYPE_QUAD:
-		write_number(&name[0], namelen, node, value);
+		write_number(&name[0], namelen, node, value, optional);
 		break;
 	case CTLTYPE_STRING:
-		write_string(&name[0], namelen, node, value);
+		write_string(&name[0], namelen, node, value, optional);
 		break;
 	case CTLTYPE_STRUCT:
 		/*
@@ -1754,7 +1757,8 @@ sysctlperror(const char *fmt, ...)
  * ********************************************************************
  */
 static void
-write_number(int *name, u_int namelen, struct sysctlnode *node, char *value)
+write_number(int *name, u_int namelen, struct sysctlnode *node, char *value,
+	bool optional)
 {
 	u_int ii, io;
 	u_quad_t qi, qo;
@@ -1811,7 +1815,9 @@ write_number(int *name, u_int namelen, struct sysctlnode *node, char *value)
 
 	rc = prog_sysctl(name, namelen, o, &so, i, si);
 	if (rc == -1) {
-		sysctlerror(0);
+		if (!optional || errno != EPERM) {
+			sysctlerror(0);
+		}
 		return;
 	}
 
@@ -1832,7 +1838,8 @@ write_number(int *name, u_int namelen, struct sysctlnode *node, char *value)
 }
 
 static void
-write_string(int *name, u_int namelen, struct sysctlnode *node, char *value)
+write_string(int *name, u_int namelen, struct sysctlnode *node, char *value,
+	bool optional)
 {
 	char *i, *o;
 	size_t si, so;
@@ -1853,7 +1860,10 @@ write_string(int *name, u_int namelen, struct sysctlnode *node, char *value)
 
 	rc = prog_sysctl(name, namelen, o, &so, i, si);
 	if (rc == -1) {
-		sysctlerror(0);
+		if (!optional || errno != EPERM) {
+			sysctlerror(0);
+		}
+		free(o);
 		return;
 	}
 
@@ -2179,32 +2189,32 @@ kern_clockrate(HANDLER_ARGS)
 static void
 kern_boottime(HANDLER_ARGS)
 {
-	struct timeval timeval;
+	struct timespec timespec;
 	time_t boottime;
 	size_t sz;
 	int rc;
 
-	sz = sizeof(timeval);
-	rc = prog_sysctl(name, namelen, &timeval, &sz, NULL, 0);
+	sz = sizeof(timespec);
+	rc = prog_sysctl(name, namelen, &timespec, &sz, NULL, 0);
 	if (rc == -1) {
 		sysctlerror(1);
 		return;
 	}
-	if (sz != sizeof(timeval))
+	if (sz != sizeof(timespec))
 		errx(EXIT_FAILURE, "%s: !returned size wrong!", sname);
 
-	boottime = timeval.tv_sec;
+	boottime = timespec.tv_sec;
 	if (xflag || rflag)
-		display_struct(pnode, sname, &timeval, sz,
+		display_struct(pnode, sname, &timespec, sz,
 			       DISPLAY_VALUE);
 	else if (!nflag)
 		/* ctime() provides the \n */
 		printf("%s%s%s", sname, eq, ctime(&boottime));
 	else if (nflag == 1)
-		printf("%ld\n", (long)boottime);
+		printf("%lld\n", (long long)boottime);
 	else
-		printf("%ld.%06ld\n", (long)timeval.tv_sec,
-		       (long)timeval.tv_usec);
+		printf("%lld.%9.9ld\n", (long long)timespec.tv_sec,
+		       timespec.tv_nsec);
 }
 
 /*ARGSUSED*/
@@ -2444,12 +2454,13 @@ kern_cp_id(HANDLER_ARGS)
 			       sizeof(u_int64_t),
 			       DISPLAY_VALUE);
 	else if (Aflag) {
-		for (i = 0; i < n; i++)
+		for (i = 0; i < n; i++) {
 			(void)snprintf(s, sizeof(s), "%s%s%d", sname, sep, i);
 			tname = s;
 			display_number(&node, tname, &cp_id[i],
 				       sizeof(u_int64_t),
 				       DISPLAY_VALUE);
+		}
 	}
 	else {
 		if (xflag || rflag)
