@@ -1,4 +1,4 @@
-/*	$NetBSD: rf_driver.c,v 1.132 2015/12/26 00:58:45 pgoyette Exp $	*/
+/*	$NetBSD: rf_driver.c,v 1.134 2019/01/08 07:18:18 mrg Exp $	*/
 /*-
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -66,7 +66,7 @@
 
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rf_driver.c,v 1.132 2015/12/26 00:58:45 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: rf_driver.c,v 1.134 2019/01/08 07:18:18 mrg Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_raid_diagnostic.h"
@@ -120,9 +120,6 @@ __KERNEL_RCSID(0, "$NetBSD: rf_driver.c,v 1.132 2015/12/26 00:58:45 pgoyette Exp
 /* rad == RF_RaidAccessDesc_t */
 #define RF_MAX_FREE_RAD 128
 #define RF_MIN_FREE_RAD  32
-
-/* debug variables */
-char    rf_panicbuf[2048];	/* a buffer to hold an error msg when we panic */
 
 /* main configuration routines */
 static int raidframe_booted = 0;
@@ -230,15 +227,14 @@ rf_Shutdown(RF_Raid_t *raidPtr)
 	while (raidPtr->nAccOutstanding) {
 		rf_wait_cond2(raidPtr->outstandingCond, raidPtr->rad_lock);
 	}
-	rf_unlock_mutex2(raidPtr->rad_lock);
 
 	/* Wait for any parity re-writes to stop... */
 	while (raidPtr->parity_rewrite_in_progress) {
 		printf("raid%d: Waiting for parity re-write to exit...\n",
 		       raidPtr->raidid);
-		tsleep(&raidPtr->parity_rewrite_in_progress, PRIBIO,
-		       "rfprwshutdown", 0);
+		rf_wait_cond2(raidPtr->parity_rewrite_cv, raidPtr->rad_lock);
 	}
+	rf_unlock_mutex2(raidPtr->rad_lock);
 
 	/* Wait for any reconstruction to stop... */
 	rf_lock_mutex2(raidPtr->mutex);
@@ -888,17 +884,15 @@ rf_ConfigureDebug(RF_Config_t *cfgPtr)
 void
 rf_print_panic_message(int line, const char *file)
 {
-	snprintf(rf_panicbuf, sizeof(rf_panicbuf),
-	    "raidframe error at line %d file %s", line, file);
+	kern_assert("raidframe error at line %d file %s", line, file);
 }
 
 #ifdef RAID_DIAGNOSTIC
 void
 rf_print_assert_panic_message(int line,	const char *file, const char *condition)
 {
-	snprintf(rf_panicbuf, sizeof(rf_panicbuf),
-		"raidframe error at line %d file %s (failed asserting %s)\n",
-		line, file, condition);
+	kern_assert("raidframe error at line %d file %s (failed asserting %s)\n",
+	    line, file, condition);
 }
 #endif
 
@@ -923,6 +917,7 @@ rf_alloc_mutex_cond(RF_Raid_t *raidPtr)
 	rf_init_mutex2(raidPtr->mutex, IPL_VM);
 
 	rf_init_cond2(raidPtr->outstandingCond, "rfocond");
+	rf_init_cond2(raidPtr->parity_rewrite_cv, "rfprwshutdown");
 	rf_init_mutex2(raidPtr->rad_lock, IPL_VM);
 
 	rf_init_mutex2(raidPtr->access_suspend_mutex, IPL_VM);
@@ -943,6 +938,7 @@ rf_destroy_mutex_cond(RF_Raid_t *raidPtr)
 	rf_destroy_mutex2(raidPtr->access_suspend_mutex);
 	rf_destroy_cond2(raidPtr->access_suspend_cv);
 
+	rf_destroy_cond2(raidPtr->parity_rewrite_cv);
 	rf_destroy_cond2(raidPtr->outstandingCond);
 	rf_destroy_mutex2(raidPtr->rad_lock);
 

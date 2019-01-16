@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile,v 1.28 2016/04/15 01:35:26 ozaki-r Exp $
+#	$NetBSD: Makefile,v 1.31 2018/12/12 01:40:20 rin Exp $
 #
 
 
@@ -12,14 +12,19 @@ IOCONF=	NET.ioconf
 SRCS=	if.c if_loop.c route.c rtsock.c raw_usrreq.c			\
 	raw_cb.c if_media.c link_proto.c net_stats.c if_ethersubr.c	\
 	if_spppsubr.c
-SRCS+=	if_43.c pfil.c
+SRCS+=	if_43.c
 SRCS+=	if_llatbl.c
 SRCS+=	net_component.c
+SRCS+=	ether_sw_offload.c
 
 .include <bsd.init.mk>
 
 .if !empty(RUMP_NBCOMPAT:M50)
 SRCS+=	rtsock_50.c uipc_syscalls_50.c
+.endif
+
+.if !empty(RUMP_NBCOMPAT:M70)
+SRCS+=	rtsock_70.c uipc_usrreq_70.c
 .endif
 
 .include "${.CURDIR}/../libnetinet/Makefile.inc"

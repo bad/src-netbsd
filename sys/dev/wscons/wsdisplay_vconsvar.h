@@ -1,4 +1,4 @@
-/*	$NetBSD: wsdisplay_vconsvar.h,v 1.24 2016/06/02 21:17:14 macallan Exp $ */
+/*	$NetBSD: wsdisplay_vconsvar.h,v 1.27 2018/11/30 05:20:34 msaitoh Exp $ */
 
 /*-
  * Copyright (c) 2005, 2006 Michael Lorenz
@@ -42,9 +42,10 @@ struct vcons_screen {
 	void *scr_cookie;
 	struct vcons_data *scr_vd;
 	struct vcons_data *scr_origvd;
-	const struct wsscreen_descr *scr_type;
+	struct wsscreen_descr *scr_type;
 	uint32_t *scr_chars;
 	long *scr_attrs;
+	void (*putchar)(void *, int, int, u_int, long);
 	long scr_defattr;
 	/* static flags set by the driver */
 	uint32_t scr_flags;
@@ -56,13 +57,14 @@ struct vcons_screen {
 					 * drawing */
 #define VCONS_DONT_DRAW		8	/* don't draw on this screen at all */
 /*
- * the following flags are for drivers which either can't accelerate (all) copy 
+ * the following flags are for drivers which either can't accelerate (all) copy
  * operations or where drawing characters is faster than the blitter
  * for example, Sun's Creator boards can't accelerate copycols()
  */
 #define VCONS_NO_COPYCOLS	0x10	/* use putchar() based copycols() */
 #define VCONS_NO_COPYROWS	0x20	/* use putchar() based copyrows() */
 #define VCONS_DONT_READ		0x30	/* avoid framebuffer reads */
+#define VCONS_LOADFONT		0x40	/* driver can load_font() */
 	/* status flags used by vcons */
 	uint32_t scr_status;
 #define VCONS_IS_VISIBLE	1	/* this screen is currently visible */
@@ -95,13 +97,13 @@ struct vcons_screen {
 struct vcons_data {
 	/* usually the drivers softc */
 	void *cookie;
-	
+
 	/*
 	 * setup the rasops part of the passed vcons_screen, like
 	 * geometry, framebuffer address, font, characters, acceleration.
 	 * we pass the cookie as 1st parameter
 	 */
-	void (*init_screen)(void *, struct vcons_screen *, int, 
+	void (*init_screen)(void *, struct vcons_screen *, int,
 	    long *);
 
 	/* accessops */
@@ -112,10 +114,10 @@ struct vcons_data {
 	void (*erasecols)(void *, int, int, int, long);
 	void (*copyrows)(void *, int, int, int);
 	void (*eraserows)(void *, int, int, long);
-	void (*putchar)(void *, int, int, u_int, long);
 	void (*cursor)(void *, int, int, int);
 	/* called before vcons_redraw_screen */
-	void (*show_screen_cb)(struct vcons_screen *);
+	void *show_screen_cookie;
+	void (*show_screen_cb)(struct vcons_screen *, void *);
 	/* virtual screen management stuff */
 	void (*switch_cb)(void *, int, int);
 	void *switch_cb_arg;
@@ -124,6 +126,7 @@ struct vcons_data {
 	LIST_HEAD(, vcons_screen) screens;
 	struct vcons_screen *active, *wanted;
 	const struct wsscreen_descr *currenttype;
+	struct wsscreen_descr *defaulttype;
 	int switch_poll_count;
 #ifdef VCONS_DRAW_INTR
 	int cells;

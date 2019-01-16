@@ -1,4 +1,4 @@
-/*	$NetBSD: if_alc.c,v 1.21 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_alc.c,v 1.29 2018/12/09 11:14:02 jdolecek Exp $	*/
 /*	$OpenBSD: if_alc.c,v 1.1 2009/08/08 09:31:13 kevlo Exp $	*/
 /*-
  * Copyright (c) 2009, Pyun YongHyeon <yongari@FreeBSD.org>
@@ -49,13 +49,12 @@
 
 #include <sys/bus.h>
 
+#include <net/bpf.h>
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_llc.h>
 #include <net/if_media.h>
 #include <net/if_ether.h>
-
-#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -66,8 +65,6 @@
 
 #include <net/if_types.h>
 #include <net/if_vlanvar.h>
-
-#include <net/bpf.h>
 
 #include <dev/mii/mii.h>
 #include <dev/mii/miivar.h>
@@ -1211,7 +1208,8 @@ alc_attach(device_t parent, device_t self, void *aux)
 	 * Allocate IRQ
 	 */
 	intrstr = pci_intr_string(sc->sc_pct, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_irq_handle = pci_intr_establish(pc, ih, IPL_NET, alc_intr, sc);
+	sc->sc_irq_handle = pci_intr_establish_xname(pc, ih, IPL_NET, alc_intr,
+	    sc, device_xname(self));
 	if (sc->sc_irq_handle == NULL) {
 		printf(": could not establish interrupt");
 		if (intrstr != NULL)
@@ -1272,7 +1270,7 @@ alc_attach(device_t parent, device_t self, void *aux)
 			/* Disable ASPM L0S and L1. */
 			cap = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
 			    base + PCIE_LCAP) >> 16;
-			if ((cap & 0x00000c00) != 0) {
+			if ((cap & PCIE_LCAP_ASPM) != 0) {
 				ctl = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
 				    base + PCIE_LCSR) >> 16;
 				if ((ctl & 0x08) != 0)
@@ -1466,6 +1464,7 @@ alc_attach(device_t parent, device_t self, void *aux)
 		ifmedia_set(&sc->sc_miibus.mii_media, IFM_ETHER | IFM_AUTO);
 
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->alc_eaddr);
 
 	if (!pmf_device_register(self, NULL, NULL))
@@ -1852,9 +1851,6 @@ alc_encap(struct alc_softc *sc, struct mbuf **m_head)
 	bus_dmamap_t map;
 	uint32_t cflags, poff, vtag;
 	int error, idx, nsegs, prod;
-#if NVLAN > 0
-	struct m_tag *mtag;
-#endif
 
 	m = *m_head;
 	cflags = vtag = 0;
@@ -1913,8 +1909,8 @@ alc_encap(struct alc_softc *sc, struct mbuf **m_head)
 	idx = 0;
 #if NVLAN > 0
 	/* Configure VLAN hardware tag insertion. */
-	if ((mtag = VLAN_OUTPUT_TAG(&sc->sc_ec, m))) {
-		vtag = htons(VLAN_TAG_VALUE(mtag));
+	if (vlan_has_tag(m)) {
+		vtag = htons(vlan_get_tag(m));
 		vtag = (vtag << TD_VLAN_SHIFT) & TD_VLAN_MASK;
 		cflags |= TD_INS_VLAN_TAG;
 	}
@@ -1994,7 +1990,7 @@ alc_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 	}
 
 	if (enq) {
@@ -2300,8 +2296,7 @@ alc_intr(void *arg)
 		}
 
 		alc_txeof(sc);
-		if (!IFQ_IS_EMPTY(&ifp->if_snd))
-			alc_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 
 	/* Re-enable interrupts. */
@@ -2540,7 +2535,7 @@ alc_rxeof(struct alc_softc *sc, struct rx_rdesc *rrd)
 			sc->alc_cdata.alc_rxhead = mp;
 			sc->alc_cdata.alc_rxtail = mp;
 		} else {
-			mp->m_flags &= ~M_PKTHDR;
+			m_remove_pkthdr(mp);
 			sc->alc_cdata.alc_rxprev_tail =
 			    sc->alc_cdata.alc_rxtail;
 			sc->alc_cdata.alc_rxtail->m_next = mp;
@@ -2550,7 +2545,7 @@ alc_rxeof(struct alc_softc *sc, struct rx_rdesc *rrd)
 		if (count == nsegs - 1) {
 			/* Last desc. for this frame. */
 			m = sc->alc_cdata.alc_rxhead;
-			m->m_flags |= M_PKTHDR;
+			KASSERT(m->m_flags & M_PKTHDR);
 			/*
 			 * It seems that L1C/L2C controller has no way
 			 * to tell hardware to strip CRC bytes.
@@ -2582,11 +2577,9 @@ alc_rxeof(struct alc_softc *sc, struct rx_rdesc *rrd)
 			 */
 			if (status & RRD_VLAN_TAG) {
 				u_int32_t vtag = RRD_VLAN(le32toh(rrd->vtag));
-				VLAN_INPUT_TAG(ifp, m, ntohs(vtag), );
+				vlan_set_tag(m, ntohs(vtag));
 			}
 #endif
-
-			bpf_mtap(ifp, m);
 
 			/* Pass it on. */
 			if_percpuq_enqueue(ifp->if_percpuq, m);

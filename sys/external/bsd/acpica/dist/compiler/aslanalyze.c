@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -327,13 +327,13 @@ AnCheckMethodReturnValue (
     /* Examine the parent op of this method */
 
     OwningOp = Node->Op;
-    if (OwningOp->Asl.CompileFlags & NODE_METHOD_NO_RETVAL)
+    if (OwningOp->Asl.CompileFlags & OP_METHOD_NO_RETVAL)
     {
         /* Method NEVER returns a value */
 
         AslError (ASL_ERROR, ASL_MSG_NO_RETVAL, Op, Op->Asl.ExternalName);
     }
-    else if (OwningOp->Asl.CompileFlags & NODE_METHOD_SOME_NO_RETVAL)
+    else if (OwningOp->Asl.CompileFlags & OP_METHOD_SOME_NO_RETVAL)
     {
         /* Method SOMETIMES returns a value, SOMETIMES not */
 
@@ -344,8 +344,8 @@ AnCheckMethodReturnValue (
     {
         /* Method returns a value, but the type is wrong */
 
-        AnFormatBtype (StringBuffer, ThisNodeBtype);
-        AnFormatBtype (StringBuffer2, RequiredBtypes);
+        AnFormatBtype (AslGbl_StringBuffer, ThisNodeBtype);
+        AnFormatBtype (AslGbl_StringBuffer2, RequiredBtypes);
 
         /*
          * The case where the method does not return any value at all
@@ -355,11 +355,11 @@ AnCheckMethodReturnValue (
          */
         if (ThisNodeBtype != 0)
         {
-            snprintf (MsgBuffer, sizeof(MsgBuffer),
+            snprintf (AslGbl_MsgBuffer, sizeof(AslGbl_MsgBuffer),
                 "Method returns [%s], %s operator requires [%s]",
-                StringBuffer, OpInfo->Name, StringBuffer2);
+                AslGbl_StringBuffer, OpInfo->Name, AslGbl_StringBuffer2);
 
-            AslError (ASL_ERROR, ASL_MSG_INVALID_TYPE, ArgOp, MsgBuffer);
+            AslError (ASL_ERROR, ASL_MSG_INVALID_TYPE, ArgOp, AslGbl_MsgBuffer);
         }
     }
 }

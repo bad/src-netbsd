@@ -1,4 +1,4 @@
-/*	$NetBSD: emuxki.c,v 1.64 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: emuxki.c,v 1.66 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2001, 2007 The NetBSD Foundation, Inc.
@@ -49,7 +49,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: emuxki.c,v 1.64 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: emuxki.c,v 1.66 2018/12/09 11:14:02 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -252,8 +252,7 @@ dmamem_alloc(bus_dma_tag_t dmat, size_t size, bus_size_t align, int nsegs)
 	struct dmamem	*mem;
 
 	/* Allocate memory for structure */
-	if ((mem = kmem_alloc(sizeof(*mem), KM_SLEEP)) == NULL)
-		return NULL;
+	mem = kmem_alloc(sizeof(*mem), KM_SLEEP);
 	mem->dmat = dmat;
 	mem->size = size;
 	mem->align = align;
@@ -261,10 +260,6 @@ dmamem_alloc(bus_dma_tag_t dmat, size_t size, bus_size_t align, int nsegs)
 	mem->bound = 0;
 
 	mem->segs = kmem_alloc(mem->nsegs * sizeof(*(mem->segs)), KM_SLEEP);
-	if (mem->segs == NULL) {
-		kmem_free(mem, sizeof(*mem));
-		return NULL;
-	}
 
 	if (bus_dmamem_alloc(dmat, mem->size, mem->align, mem->bound,
 			     mem->segs, mem->nsegs, &(mem->rsegs),
@@ -439,8 +434,8 @@ emuxki_attach(device_t parent, device_t self, void *aux)
 	}
 
 	intrstr = pci_intr_string(pa->pa_pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(pa->pa_pc, ih, IPL_AUDIO, emuxki_intr,
-		sc);
+	sc->sc_ih = pci_intr_establish_xname(pa->pa_pc, ih, IPL_AUDIO,
+	    emuxki_intr, sc, device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(self, "couldn't establish interrupt");
 		if (intrstr != NULL)
@@ -451,7 +446,7 @@ emuxki_attach(device_t parent, device_t self, void *aux)
 	}
 	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
 
- /* XXX it's unknown whether APS is made from Audigy as well */
+	/* XXX it's unknown whether APS is made from Audigy as well */
 	if (PCI_PRODUCT(pa->pa_id) == PCI_PRODUCT_CREATIVELABS_AUDIGY) {
 		sc->sc_type = EMUXKI_AUDIGY;
 		if (PCI_REVISION(pa->pa_class) == 0x04) {
@@ -968,9 +963,7 @@ emuxki_mem_new(struct emuxki_softc *sc, int ptbidx, size_t size)
 {
 	struct emuxki_mem *mem;
 
-	if ((mem = kmem_alloc(sizeof(*mem), KM_SLEEP)) == NULL)
-		return NULL;
-
+	mem = kmem_alloc(sizeof(*mem), KM_SLEEP);
 	mem->ptbidx = ptbidx;
 	if ((mem->dmamem = dmamem_alloc(sc->sc_dmat, size, EMU_DMA_ALIGN,
 	    EMU_DMAMEM_NSEG)) == NULL) {
@@ -1487,8 +1480,6 @@ emuxki_voice_new(struct emuxki_softc *sc, uint8_t use)
 		mutex_exit(&sc->sc_intr_lock);
 		voice = kmem_alloc(sizeof(*voice), KM_SLEEP);
 		mutex_enter(&sc->sc_intr_lock);
-		if (!voice)
-			return NULL;
 	} else if (voice->use != use) {
 		mutex_exit(&sc->sc_intr_lock);
 		emuxki_voice_dataloc_destroy(voice);

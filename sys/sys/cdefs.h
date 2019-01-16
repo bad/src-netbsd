@@ -1,4 +1,4 @@
-/*	$NetBSD: cdefs.h,v 1.128 2015/11/19 17:04:01 christos Exp $	*/
+/*	$NetBSD: cdefs.h,v 1.139 2018/12/18 16:23:20 skrll Exp $	*/
 
 /* * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -38,6 +38,7 @@
 
 #ifdef _KERNEL_OPT
 #include "opt_diagnostic.h"
+#include "opt_kasan.h"
 #endif
 
 /*
@@ -205,7 +206,7 @@
  * Calls to const functions can be optimised away and moved around
  * without limitations.
  */
-#if !__GNUC_PREREQ__(2, 0)
+#if !__GNUC_PREREQ__(2, 0) && !defined(__lint__)
 #define __attribute__(x)
 #endif
 
@@ -258,7 +259,7 @@
 /*
  * __unused: Note that item or function might be unused.
  */
-#if __GNUC_PREREQ__(2, 7)
+#if __GNUC_PREREQ__(2, 7) || defined(__lint__)
 #define	__unused	__attribute__((__unused__))
 #else
 #define	__unused	/* delete */
@@ -305,6 +306,28 @@
 #else
 #define	__unreachable()	do {} while (/*CONSTCOND*/0)
 #endif
+
+#if defined(_KERNEL)
+#if __GNUC_PREREQ__(4, 9) && defined(KASAN)
+#define	__noasan	__attribute__((no_sanitize_address))
+#else
+#define	__noasan	/* nothing */
+#endif
+#endif
+
+/*
+ * To be used when an empty body is required like:
+ *
+ * #ifdef DEBUG
+ * # define dprintf(a) printf(a)
+ * #else
+ * # define dprintf(a) __nothing
+ * #endif
+ *
+ * We use ((void)0) instead of do {} while (0) so that it
+ * works on , expressions.
+ */
+#define __nothing	((void)0)
 
 #if defined(__cplusplus)
 #define	__BEGIN_EXTERN_C	extern "C" {
@@ -355,11 +378,12 @@
 #define	__c99inline	extern __attribute__((__gnu_inline__)) __inline
 #elif defined(__GNUC__)
 #define	__c99inline	extern __inline
-#elif defined(__STDC_VERSION__)
+#elif defined(__STDC_VERSION__) || defined(__lint__)
 #define	__c99inline	__inline
 #endif
 
 #if defined(__lint__)
+#define __thread	/* delete */
 #define	__packed	__packed
 #define	__aligned(x)	/* delete */
 #define	__section(x)	/* delete */
@@ -390,18 +414,16 @@
 #endif
 
 /*
- * C99 defines __func__ predefined identifier, which was made available
- * in GCC 2.95.
+ * C99 and C++11 define __func__ predefined identifier, which was made
+ * available in GCC 2.95.
  */
-#if !(__STDC_VERSION__ >= 199901L)
-#if __GNUC_PREREQ__(2, 6)
-#define	__func__	__PRETTY_FUNCTION__
-#elif __GNUC_PREREQ__(2, 4)
+#if !(__STDC_VERSION__ >= 199901L) && !(__cplusplus - 0 >= 201103L)
+#if __GNUC_PREREQ__(2, 4)
 #define	__func__	__FUNCTION__
 #else
 #define	__func__	""
 #endif
-#endif /* !(__STDC_VERSION__ >= 199901L) */
+#endif /* !(__STDC_VERSION__ >= 199901L) && !(__cplusplus - 0 >= 201103L) */
 
 #if defined(_KERNEL)
 #if defined(NO_KERNEL_RCSIDS)
@@ -563,9 +585,13 @@
     (((uintmax_t)(__n) >= NBBY * sizeof(uintmax_t)) ? 0 : \
     ((uintmax_t)1 << (uintmax_t)((__n) & (NBBY * sizeof(uintmax_t) - 1))))
 
+/* Macros for min/max. */
+#define	__MIN(a,b)	((/*CONSTCOND*/(a)<=(b))?(a):(b))
+#define	__MAX(a,b)	((/*CONSTCOND*/(a)>(b))?(a):(b))
+
 /* __BITS(m, n): bits m through n, m < n. */
 #define	__BITS(__m, __n)	\
-	((__BIT(MAX((__m), (__n)) + 1) - 1) ^ (__BIT(MIN((__m), (__n))) - 1))
+	((__BIT(__MAX((__m), (__n)) + 1) - 1) ^ (__BIT(__MIN((__m), (__n))) - 1))
 #endif /* !__ASSEMBLER__ */
 
 /* find least significant bit that is set */
@@ -594,7 +620,7 @@
 #define __CASTV(__dt, __st)	__CAST(__dt, __CAST(void *, __st))
 #define __CASTCV(__dt, __st)	__CAST(__dt, __CAST(const void *, __st))
 
-#define __USE(a) ((void)(a))
+#define __USE(a) (/*LINTED*/(void)(a))
 
 #define __type_mask(t) (/*LINTED*/sizeof(t) < sizeof(intmax_t) ? \
     (~((1ULL << (sizeof(t) * NBBY)) - 1)) : 0ULL)

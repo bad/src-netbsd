@@ -1,4 +1,4 @@
-/*	$NetBSD: if_pcn.c,v 1.62 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_pcn.c,v 1.66 2018/12/02 18:12:29 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 2001 Wasabi Systems, Inc.
@@ -65,7 +65,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_pcn.c,v 1.62 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_pcn.c,v 1.66 2018/12/02 18:12:29 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -684,7 +684,8 @@ pcn_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_NET, pcn_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(pc, ih, IPL_NET, pcn_intr, sc,
+	    device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(self, "unable to establish interrupt");
 		if (intrstr != NULL)
@@ -812,6 +813,7 @@ pcn_attach(device_t parent, device_t self, void *aux)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 	rnd_attach_source(&sc->rnd_source, device_xname(self),
 	    RND_TYPE_NET, RND_FLAG_DEFAULT);
@@ -1128,7 +1130,7 @@ pcn_start(struct ifnet *ifp)
 		sc->sc_txsnext = PCN_NEXTTXS(sc->sc_txsnext);
 
 		/* Pass the packet to any BPF listeners. */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->sc_txsfree == 0 || sc->sc_txfree == 0) {
@@ -1288,7 +1290,7 @@ pcn_intr(void *arg)
 			pcn_init(ifp);
 
 		/* Try to get more packets going. */
-		pcn_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 
 	return (handled);
@@ -1547,12 +1549,8 @@ pcn_rxintr(struct pcn_softc *sc)
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
 
-		/* Pass this up to any BPF listeners. */
-		bpf_mtap(ifp, m);
-
 		/* Pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);
-		ifp->if_ipackets++;
 	}
 
 	/* Update the receive pointer. */

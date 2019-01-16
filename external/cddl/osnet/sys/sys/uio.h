@@ -1,4 +1,4 @@
-/*	$NetBSD: uio.h,v 1.9 2015/09/26 03:32:17 christos Exp $	*/
+/*	$NetBSD: uio.h,v 1.12 2018/11/30 09:53:40 hannken Exp $	*/
 
 /*-
  * Copyright (c) 2009 The NetBSD Foundation, Inc.
@@ -54,15 +54,14 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: src/sys/compat/opensolaris/sys/uio.h,v 1.1 2007/04/06 01:09:06 pjd Exp $
+ * $FreeBSD: head/sys/cddl/compat/opensolaris/sys/uio.h 219089 2011-02-27 19:41:40Z pjd $
  */
 
 #ifndef _OPENSOLARIS_SYS_UIO_H_
 #define	_OPENSOLARIS_SYS_UIO_H_
 
 #include_next <sys/uio.h>
-#include <sys/sysmacros.h>
-
+#include <sys/debug.h>
 
 #ifndef _KERNEL
 #include <assert.h>
@@ -108,20 +107,34 @@ zfs_uiomove(void *cp, size_t n, enum uio_rw dir, uio_t *uio)
 	return (uiomove(cp, n, uio));
 }
 
+#define	ZFS_MIN(a,b)	((/*CONSTCOND*/(a)<(b))?(a):(b))
+
 static __inline int
 zfs_uiocopy(void *cp, size_t n, enum uio_rw dir, uio_t *uio, size_t *cbytes)
 {
-	uio_t uio2;
-	int err;
-	
-	memcpy(&uio2, uio, sizeof(*uio));
-	assert(uio->uio_rw == dir);
-	if ((err = uiomove(cp, n, &uio2)) != 0)
-		return err;
+	uio_t auio;
+	struct iovec aiov;
+	size_t cnt;
+	int i, error;
 
-	*cbytes = uio->uio_resid - uio2.uio_resid;
+	*cbytes = 0;
+	memcpy(&auio, uio, sizeof(*uio));
+	for (i = 0; i < uio->uio_iovcnt && n > 0; i++) {
+		auio.uio_iov = &aiov;
+		auio.uio_iovcnt = 1;
+		aiov = uio->uio_iov[i];
+		cnt = ZFS_MIN(aiov.iov_len, n);
+		if (cnt == 0)
+			continue;
+		error = uiomove(cp, cnt, &auio);
+		if (error)
+			return error;
+		cp = (char *)cp + cnt;
+		n -= cnt;
+		*cbytes += cnt;
+	}
 
-	return (0);
+	return 0;
 }
 
 static __inline void
@@ -131,7 +144,7 @@ zfs_uioskip(uio_t *uiop, size_t n)
 		return;
 	while (n != 0) {
 		iovec_t        *iovp = uiop->uio_iov;
-		size_t         niovb = MIN(iovp->iov_len, n);
+		size_t         niovb = ZFS_MIN(iovp->iov_len, n);
 
 		if (niovb == 0) {
 			uiop->uio_iov++;
@@ -139,9 +152,9 @@ zfs_uioskip(uio_t *uiop, size_t n)
 			continue;
 		}
 		iovp->iov_base = (char *)iovp->iov_base + niovb;
-		uiop->uio_offset += niovb;
+		uiop->uio_offset += (off_t)niovb;
 		iovp->iov_len -= niovb;
-		uiop->uio_resid -= niovb;
+		uiop->uio_resid -= (int)niovb;
 		n -= niovb;
 	}
 	

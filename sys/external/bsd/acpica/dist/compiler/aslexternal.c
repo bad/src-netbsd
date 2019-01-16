@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -94,18 +94,18 @@ ExDoExternal (
 
     /* Create new list node of arbitrary type */
 
-    ListOp = TrAllocateNode (PARSEOP_DEFAULT_ARG);
+    ListOp = TrAllocateOp (PARSEOP_DEFAULT_ARG);
 
     /* Store External node as child */
 
     ListOp->Asl.Child = Op;
     ListOp->Asl.Next = NULL;
 
-    if (Gbl_ExternalsListHead)
+    if (AslGbl_ExternalsListHead)
     {
         /* Link new External to end of list */
 
-        Prev = Gbl_ExternalsListHead;
+        Prev = AslGbl_ExternalsListHead;
         Next = Prev;
         while (Next)
         {
@@ -117,7 +117,7 @@ ExDoExternal (
     }
     else
     {
-        Gbl_ExternalsListHead = ListOp;
+        AslGbl_ExternalsListHead = ListOp;
     }
 }
 
@@ -151,14 +151,14 @@ ExInsertArgCount (
 
     CallName = AcpiNsGetNormalizedPathname (Op->Asl.Node, TRUE);
 
-    Next = Gbl_ExternalsListHead;
+    Next = AslGbl_ExternalsListHead;
     while (Next)
     {
         ArgCount = 0;
 
         /* Skip if External node already handled */
 
-        if (Next->Asl.Child->Asl.CompileFlags & NODE_VISITED)
+        if (Next->Asl.Child->Asl.CompileFlags & OP_VISITED)
         {
             Next = Next->Asl.Next;
             continue;
@@ -174,7 +174,7 @@ ExInsertArgCount (
             continue;
         }
 
-        Next->Asl.Child->Asl.CompileFlags |= NODE_VISITED;
+        Next->Asl.Child->Asl.CompileFlags |= OP_VISITED;
 
         /*
          * Since we will reposition Externals to the Root, set Namepath
@@ -236,10 +236,10 @@ ExAmlExternalWalkBegin (
 
     if (Op->Asl.ParseOpcode == PARSEOP_DEFINITION_BLOCK)
     {
-        Gbl_ExternalsListHead = Op->Asl.Value.Arg;
+        AslGbl_ExternalsListHead = Op->Asl.Value.Arg;
     }
 
-    if (!Gbl_ExternalsListHead)
+    if (!AslGbl_ExternalsListHead)
     {
         return (AE_OK);
     }
@@ -293,7 +293,7 @@ ExAmlExternalWalkEnd (
          * multiple definition blocks in a single file/compile)
          */
         ExMoveExternals (Op);
-        Gbl_ExternalsListHead = NULL;
+        AslGbl_ExternalsListHead = NULL;
     }
 
     return (AE_OK);
@@ -325,18 +325,20 @@ ExMoveExternals (
     ACPI_PARSE_OBJECT       *NextOp;
     ACPI_PARSE_OBJECT       *Prev;
     ACPI_PARSE_OBJECT       *Next;
+    char                    *ExternalName;
     ACPI_OBJECT_TYPE        ObjType;
+    ACPI_STATUS             Status;
     UINT32                  i;
 
 
-    if (!Gbl_ExternalsListHead)
+    if (!AslGbl_ExternalsListHead)
     {
         return;
     }
 
     /* Remove the External nodes from the tree */
 
-    NextOp = Gbl_ExternalsListHead;
+    NextOp = AslGbl_ExternalsListHead;
     while (NextOp)
     {
         /*
@@ -344,6 +346,12 @@ ExMoveExternals (
          * list
          */
         ExternalOp = NextOp->Asl.Child;
+
+        /* Get/set the fully qualified name */
+
+        ExternalName = AcpiNsGetNormalizedPathname (ExternalOp->Asl.Node, TRUE);
+        ExternalOp->Asl.ExternalName = ExternalName;
+        ExternalOp->Asl.Namepath = ExternalName;
 
         /* Set line numbers (for listings, etc.) */
 
@@ -353,6 +361,22 @@ ExMoveExternals (
         Next = ExternalOp->Asl.Child;
         Next->Asl.LineNumber = 0;
         Next->Asl.LogicalLineNumber = 0;
+
+        if (Next->Asl.ParseOpcode == PARSEOP_NAMESEG)
+        {
+            Next->Asl.ParseOpcode = PARSEOP_NAMESTRING;
+        }
+
+        Next->Asl.ExternalName = ExternalName;
+        Status = UtInternalizeName (ExternalName, &Next->Asl.Value.String);
+        if (ACPI_FAILURE (Status))
+        {
+            AslError (ASL_ERROR, ASL_MSG_COMPILER_INTERNAL,
+                Next, "Could not internalize namestring");
+            return;
+        }
+
+        Next->Asl.AmlLength = strlen (Next->Asl.Value.String);
 
         Next = Next->Asl.Next;
         Next->Asl.LineNumber = 0;
@@ -388,7 +412,7 @@ ExMoveExternals (
 
         Prev->Asl.Next = ExternalOp->Asl.Next;
         ExternalOp->Asl.Next = NULL;
-        ExternalOp->Asl.Parent = Gbl_ExternalsListHead;
+        ExternalOp->Asl.Parent = AslGbl_ExternalsListHead;
 
         /* Point the External to the next in the list */
 
@@ -404,7 +428,7 @@ ExMoveExternals (
      * Loop again to remove MethodObj Externals for which
      * a MethodCall was not found (dead external reference)
      */
-    Prev = Gbl_ExternalsListHead->Asl.Child;
+    Prev = AslGbl_ExternalsListHead->Asl.Child;
     Next = Prev;
     while (Next)
     {
@@ -412,13 +436,13 @@ ExMoveExternals (
             Next->Asl.Child->Asl.Next->Asl.Value.Integer;
 
         if (ObjType == ACPI_TYPE_METHOD &&
-            !(Next->Asl.CompileFlags & NODE_VISITED))
+            !(Next->Asl.CompileFlags & OP_VISITED))
         {
             if (Next == Prev)
             {
-                Gbl_ExternalsListHead->Asl.Child = Next->Asl.Next;
+                AslGbl_ExternalsListHead->Asl.Child = Next->Asl.Next;
                 Next->Asl.Next = NULL;
-                Prev = Gbl_ExternalsListHead->Asl.Child;
+                Prev = AslGbl_ExternalsListHead->Asl.Child;
                 Next = Prev;
                 continue;
             }
@@ -437,32 +461,32 @@ ExMoveExternals (
 
     /* If list is now empty, don't bother to make If (0) block */
 
-    if (!Gbl_ExternalsListHead->Asl.Child)
+    if (!AslGbl_ExternalsListHead->Asl.Child)
     {
         return;
     }
 
     /* Convert Gbl_ExternalsListHead parent to If(). */
 
-    Gbl_ExternalsListHead->Asl.ParseOpcode = PARSEOP_IF;
-    Gbl_ExternalsListHead->Asl.AmlOpcode = AML_IF_OP;
-    Gbl_ExternalsListHead->Asl.CompileFlags = NODE_AML_PACKAGE;
-    UtSetParseOpName (Gbl_ExternalsListHead);
+    AslGbl_ExternalsListHead->Asl.ParseOpcode = PARSEOP_IF;
+    AslGbl_ExternalsListHead->Asl.AmlOpcode = AML_IF_OP;
+    AslGbl_ExternalsListHead->Asl.CompileFlags = OP_AML_PACKAGE;
+    UtSetParseOpName (AslGbl_ExternalsListHead);
 
     /* Create a Zero op for the If predicate */
 
-    PredicateOp = TrAllocateNode (PARSEOP_ZERO);
+    PredicateOp = TrAllocateOp (PARSEOP_ZERO);
     PredicateOp->Asl.AmlOpcode = AML_ZERO_OP;
 
-    PredicateOp->Asl.Parent = Gbl_ExternalsListHead;
+    PredicateOp->Asl.Parent = AslGbl_ExternalsListHead;
     PredicateOp->Asl.Child = NULL;
-    PredicateOp->Asl.Next = Gbl_ExternalsListHead->Asl.Child;
-    Gbl_ExternalsListHead->Asl.Child = PredicateOp;
+    PredicateOp->Asl.Next = AslGbl_ExternalsListHead->Asl.Child;
+    AslGbl_ExternalsListHead->Asl.Child = PredicateOp;
 
     /* Set line numbers (for listings, etc.) */
 
-    Gbl_ExternalsListHead->Asl.LineNumber = 0;
-    Gbl_ExternalsListHead->Asl.LogicalLineNumber = 0;
+    AslGbl_ExternalsListHead->Asl.LineNumber = 0;
+    AslGbl_ExternalsListHead->Asl.LogicalLineNumber = 0;
 
     PredicateOp->Asl.LineNumber = 0;
     PredicateOp->Asl.LogicalLineNumber = 0;
@@ -484,15 +508,15 @@ ExMoveExternals (
     {
         /* Definition Block is not empty */
 
-        Gbl_ExternalsListHead->Asl.Next = Next;
+        AslGbl_ExternalsListHead->Asl.Next = Next;
     }
     else
     {
         /* Definition Block is empty. */
 
-        Gbl_ExternalsListHead->Asl.Next = NULL;
+        AslGbl_ExternalsListHead->Asl.Next = NULL;
     }
 
-    Prev->Asl.Next = Gbl_ExternalsListHead;
-    Gbl_ExternalsListHead->Asl.Parent = Prev->Asl.Parent;
+    Prev->Asl.Next = AslGbl_ExternalsListHead;
+    AslGbl_ExternalsListHead->Asl.Parent = Prev->Asl.Parent;
 }

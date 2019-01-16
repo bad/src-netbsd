@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_time_30.c,v 1.4 2011/01/19 10:21:16 tsutsui Exp $	*/
+/*	$NetBSD: kern_time_30.c,v 1.6 2018/10/30 14:43:38 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -36,9 +36,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_time_30.c,v 1.4 2011/01/19 10:21:16 tsutsui Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_time_30.c,v 1.6 2018/10/30 14:43:38 riastradh Exp $");
 
+#ifdef _KERNEL_OPT
 #include "opt_ntp.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -66,6 +68,7 @@ compat_30_sys_ntp_gettime(struct lwp *l,
 
 	if (SCARG(uap, ntvp)) {
 		ntp_gettime(&ntv);
+		memset(&ntv30, 0, sizeof(ntv30));
 		TIMESPEC_TO_TIMEVAL(&tv, &ntv.time);
 		timeval_to_timeval50(&tv, &ntv30.time);
 		ntv30.maxerror = ntv.maxerror;

@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ste.c,v 1.48 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: if_ste.c,v 1.52 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ste.c,v 1.48 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ste.c,v 1.52 2018/12/09 11:14:02 jdolecek Exp $");
 
 
 #include <sys/param.h>
@@ -361,7 +361,8 @@ ste_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_NET, ste_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(pc, ih, IPL_NET, ste_intr, sc,
+	    device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "unable to establish interrupt");
 		if (intrstr != NULL)
@@ -505,6 +506,7 @@ ste_attach(device_t parent, device_t self, void *aux)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 	/*
@@ -707,7 +709,7 @@ ste_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->sc_txpending == STE_NTXDESC) {
@@ -912,7 +914,7 @@ ste_intr(void *arg)
 	    sc->sc_IntEnable);
 
 	/* Try to get more packets going. */
-	ste_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	return (1);
 }
@@ -1047,12 +1049,6 @@ ste_rxintr(struct ste_softc *sc)
 
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
-
-		/*
-		 * Pass this up to any BPF listeners, but only
-		 * pass if up the stack if it's for us.
-		 */
-		bpf_mtap(ifp, m);
 
 		/* Pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);

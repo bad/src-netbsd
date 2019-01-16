@@ -1,4 +1,4 @@
-/*	$NetBSD: uipc_socket.c,v 1.248 2016/06/10 13:27:15 ozaki-r Exp $	*/
+/*	$NetBSD: uipc_socket.c,v 1.268 2018/12/22 14:28:56 maxv Exp $	*/
 
 /*-
  * Copyright (c) 2002, 2007, 2008, 2009 The NetBSD Foundation, Inc.
@@ -71,7 +71,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uipc_socket.c,v 1.248 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uipc_socket.c,v 1.268 2018/12/22 14:28:56 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -118,6 +118,7 @@ MALLOC_DEFINE(M_SONAME, "soname", "socket name");
 
 extern const struct fileops socketops;
 
+static int	sooptions;
 extern int	somaxconn;			/* patchable (XXX sysctl) */
 int		somaxconn = SOMAXCONN;
 kmutex_t	*softnet_lock;
@@ -295,7 +296,8 @@ sopendfree_thread(void *v)
 
 			for (; m != NULL; m = next) {
 				next = m->m_next;
-				KASSERT((~m->m_flags & (M_EXT|M_EXT_PAGES)) == 0);
+				KASSERT((~m->m_flags & (M_EXT|M_EXT_PAGES)) ==
+				    0);
 				KASSERT(m->m_ext.ext_refcnt == 0);
 
 				rv += m->m_ext.ext_size;
@@ -434,17 +436,20 @@ socket_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
 
 	case KAUTH_REQ_NETWORK_SOCKET_OPEN:
 		/* We allow "raw" routing/bluetooth sockets to anyone. */
-		if ((u_long)arg1 == PF_ROUTE || (u_long)arg1 == PF_OROUTE
-		    || (u_long)arg1 == PF_BLUETOOTH) {
+		switch ((u_long)arg1) {
+		case PF_ROUTE:
+		case PF_OROUTE:
+		case PF_BLUETOOTH:
+		case PF_CAN:
 			result = KAUTH_RESULT_ALLOW;
-		} else {
+			break;
+		default:
 			/* Privileged, let secmodel handle this. */
 			if ((u_long)arg2 == SOCK_RAW)
 				break;
+			result = KAUTH_RESULT_ALLOW;
+			break;
 		}
-
-		result = KAUTH_RESULT_ALLOW;
-
 		break;
 
 	case KAUTH_REQ_NETWORK_SOCKET_CANSEE:
@@ -533,6 +538,7 @@ socreate(int dom, struct socket **aso, int type, int proto, struct lwp *l,
 	so->so_proto = prp;
 	so->so_send = sosend;
 	so->so_receive = soreceive;
+	so->so_options = sooptions;
 #ifdef MBUFTRACE
 	so->so_rcv.sb_mowner = &prp->pr_domain->dom_mowner;
 	so->so_snd.sb_mowner = &prp->pr_domain->dom_mowner;
@@ -648,7 +654,7 @@ solisten(struct socket *so, int backlog, struct lwp *l)
 	short	oldopt, oldqlimit;
 
 	solock(so);
-	if ((so->so_state & (SS_ISCONNECTED | SS_ISCONNECTING | 
+	if ((so->so_state & (SS_ISCONNECTED | SS_ISCONNECTING |
 	    SS_ISDISCONNECTING)) != 0) {
 		sounlock(so);
 		return EINVAL;
@@ -659,7 +665,7 @@ solisten(struct socket *so, int backlog, struct lwp *l)
 		so->so_options |= SO_ACCEPTCONN;
 	if (backlog < 0)
 		backlog = 0;
-	so->so_qlimit = min(backlog, somaxconn);
+	so->so_qlimit = uimin(backlog, somaxconn);
 
 	error = (*so->so_proto->pr_usrreqs->pr_listen)(so, l);
 	if (error != 0) {
@@ -786,7 +792,7 @@ soabort(struct socket *so)
 {
 	u_int refs;
 	int error;
-	
+
 	KASSERT(solocked(so));
 	KASSERT(so->so_head == NULL);
 
@@ -1036,7 +1042,7 @@ sosend(struct socket *so, struct sockaddr *addr, struct uio *uio,
 					 * for protocol headers in first mbuf.
 					 */
 					if (atomic && top == 0 && len < mlen)
-						MH_ALIGN(m, len);
+						m_align(m, len);
 				}
 				error = uiomove(mtod(m, void *), (int)len, uio);
  have_data:
@@ -1065,8 +1071,8 @@ sosend(struct socket *so, struct sockaddr *addr, struct uio *uio,
 			if (resid > 0)
 				so->so_state |= SS_MORETOCOME;
 			if (flags & MSG_OOB) {
-				error = (*so->so_proto->pr_usrreqs->pr_sendoob)(so,
-				    top, control);
+				error = (*so->so_proto->pr_usrreqs->pr_sendoob)(
+				    so, top, control);
 			} else {
 				error = (*so->so_proto->pr_usrreqs->pr_send)(so,
 				    top, addr, control, l);
@@ -1236,12 +1242,16 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 		if (m == NULL && so->so_rcv.sb_cc)
 			panic("receive 1");
 #endif
-		if (so->so_error) {
+		if (so->so_error || so->so_rerror) {
 			if (m != NULL)
 				goto dontblock;
-			error = so->so_error;
-			if ((flags & MSG_PEEK) == 0)
+			if (so->so_error) {
+				error = so->so_error;
 				so->so_error = 0;
+			} else {
+				error = so->so_rerror;
+				so->so_rerror = 0;
+			}
 			goto release;
 		}
 		if (so->so_state & SS_CANTRCVMORE) {
@@ -1313,7 +1323,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 		orig_resid = 0;
 		if (flags & MSG_PEEK) {
 			if (paddr)
-				*paddr = m_copy(m, 0, m->m_len);
+				*paddr = m_copym(m, 0, m->m_len, M_DONTWAIT);
 			m = m->m_next;
 		} else {
 			sbfree(&so->so_rcv, m);
@@ -1324,8 +1334,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 				m->m_next = NULL;
 				m = so->so_rcv.sb_mb;
 			} else {
-				MFREE(m, so->so_rcv.sb_mb);
-				m = so->so_rcv.sb_mb;
+				m = so->so_rcv.sb_mb = m_free(m);
 			}
 			sbsync(&so->so_rcv, nextrecord);
 		}
@@ -1339,7 +1348,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 			orig_resid = 0;
 			if (flags & MSG_PEEK) {
 				if (paddr)
-					*paddr = m_copy(m, 0, m->m_len);
+					*paddr = m_copym(m, 0, m->m_len, M_DONTWAIT);
 				m = m->m_next;
 			} else {
 				sbfree(&so->so_rcv, m);
@@ -1349,8 +1358,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 					m->m_next = 0;
 					m = so->so_rcv.sb_mb;
 				} else {
-					MFREE(m, so->so_rcv.sb_mb);
-					m = so->so_rcv.sb_mb;
+					m = so->so_rcv.sb_mb = m_free(m);
 				}
 			}
 		}
@@ -1369,7 +1377,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 		do {
 			if (flags & MSG_PEEK) {
 				if (controlp != NULL) {
-					*controlp = m_copy(m, 0, m->m_len);
+					*controlp = m_copym(m, 0, m->m_len, M_DONTWAIT);
 					controlp = &(*controlp)->m_next;
 				}
 				m = m->m_next;
@@ -1409,7 +1417,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 				 */
 				if (dom->dom_dispose != NULL &&
 				    type == SCM_RIGHTS) {
-				    	sounlock(so);
+					sounlock(so);
 					(*dom->dom_dispose)(cm);
 					solock(so);
 				}
@@ -1505,8 +1513,7 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 					so->so_rcv.sb_mb = m = m->m_next;
 					*mp = NULL;
 				} else {
-					MFREE(m, so->so_rcv.sb_mb);
-					m = so->so_rcv.sb_mb;
+					m = so->so_rcv.sb_mb = m_free(m);
 				}
 				/*
 				 * If m != NULL, we also know that
@@ -1564,7 +1571,8 @@ soreceive(struct socket *so, struct mbuf **paddr, struct uio *uio,
 		 */
 		while (flags & MSG_WAITALL && m == NULL && uio->uio_resid > 0 &&
 		    !sosendallatonce(so) && !nextrecord) {
-			if (so->so_error || so->so_state & SS_CANTRCVMORE)
+			if (so->so_error || so->so_rerror ||
+			    so->so_state & SS_CANTRCVMORE)
 				break;
 			/*
 			 * If we are peeking and the socket receive buffer is
@@ -1724,22 +1732,22 @@ sosetopt1(struct socket *so, const struct sockopt *sopt)
 		KASSERT(solocked(so));
 		break;
 
-  	case SO_LINGER:
- 		error = sockopt_get(sopt, &l, sizeof(l));
+	case SO_LINGER:
+		error = sockopt_get(sopt, &l, sizeof(l));
 		solock(so);
- 		if (error)
- 			break;
- 		if (l.l_linger < 0 || l.l_linger > USHRT_MAX ||
- 		    l.l_linger > (INT_MAX / hz)) {
+		if (error)
+			break;
+		if (l.l_linger < 0 || l.l_linger > USHRT_MAX ||
+		    l.l_linger > (INT_MAX / hz)) {
 			error = EDOM;
 			break;
 		}
- 		so->so_linger = l.l_linger;
- 		if (l.l_onoff)
- 			so->so_options |= SO_LINGER;
- 		else
- 			so->so_options &= ~SO_LINGER;
-   		break;
+		so->so_linger = l.l_linger;
+		if (l.l_onoff)
+			so->so_options |= SO_LINGER;
+		else
+			so->so_options &= ~SO_LINGER;
+		break;
 
 	case SO_DEBUG:
 	case SO_KEEPALIVE:
@@ -1751,6 +1759,7 @@ sosetopt1(struct socket *so, const struct sockopt *sopt)
 	case SO_OOBINLINE:
 	case SO_TIMESTAMP:
 	case SO_NOSIGPIPE:
+	case SO_RERROR:
 #ifdef SO_OTIMESTAMP
 	case SO_OTIMESTAMP:
 #endif
@@ -1918,7 +1927,7 @@ so_setsockopt(struct lwp *l, struct socket *so, int level, int name,
 
 	return error;
 }
- 
+
 /*
  * internal get SOL_SOCKET options
  */
@@ -1952,6 +1961,7 @@ sogetopt1(struct socket *so, struct sockopt *sopt)
 	case SO_OOBINLINE:
 	case SO_TIMESTAMP:
 	case SO_NOSIGPIPE:
+	case SO_RERROR:
 #ifdef SO_OTIMESTAMP
 	case SO_OTIMESTAMP:
 #endif
@@ -1964,6 +1974,10 @@ sogetopt1(struct socket *so, struct sockopt *sopt)
 		break;
 
 	case SO_ERROR:
+		if (so->so_error == 0) {
+			so->so_error = so->so_rerror;
+			so->so_rerror = 0;
+		}
 		error = sockopt_setint(sopt, so->so_error);
 		so->so_error = 0;
 		break;
@@ -2095,7 +2109,7 @@ sockopt_destroy(struct sockopt *sopt)
 /*
  * set sockopt value
  *	- value is copied into sockopt
- * 	- memory is allocated when necessary, will not sleep
+ *	- memory is allocated when necessary, will not sleep
  */
 int
 sockopt_set(struct sockopt *sopt, const void *buf, size_t len)
@@ -2108,8 +2122,12 @@ sockopt_set(struct sockopt *sopt, const void *buf, size_t len)
 			return error;
 	}
 
-	KASSERT(sopt->sopt_size == len);
+	if (sopt->sopt_size < len)
+		return EINVAL;
+	
 	memcpy(sopt->sopt_data, buf, len);
+	sopt->sopt_retsize = len;
+
 	return 0;
 }
 
@@ -2168,9 +2186,12 @@ sockopt_setmbuf(struct sockopt *sopt, struct mbuf *m)
 			return error;
 	}
 
-	KASSERT(sopt->sopt_size == len);
+	if (sopt->sopt_size < len)
+		return EINVAL;
+	
 	m_copydata(m, 0, len, sopt->sopt_data);
 	m_freem(m);
+	sopt->sopt_retsize = len;
 
 	return 0;
 }
@@ -2243,11 +2264,11 @@ filt_soread(struct knote *kn, long hint)
 		kn->kn_flags |= EV_EOF;
 		kn->kn_fflags = so->so_error;
 		rv = 1;
-	} else if (so->so_error)	/* temporary udp error */
+	} else if (so->so_error || so->so_rerror)
 		rv = 1;
 	else if (kn->kn_sfflags & NOTE_LOWAT)
 		rv = (kn->kn_data >= kn->kn_sdata);
-	else 
+	else
 		rv = (kn->kn_data >= so->so_rcv.sb_lowat);
 	if (hint != NOTE_SUBMIT)
 		sounlock(so);
@@ -2282,7 +2303,7 @@ filt_sowrite(struct knote *kn, long hint)
 		kn->kn_flags |= EV_EOF;
 		kn->kn_fflags = so->so_error;
 		rv = 1;
-	} else if (so->so_error)	/* temporary udp error */
+	} else if (so->so_error)
 		rv = 1;
 	else if (((so->so_state & SS_ISCONNECTED) == 0) &&
 	    (so->so_proto->pr_flags & PR_CONNREQUIRED))
@@ -2318,12 +2339,26 @@ filt_solisten(struct knote *kn, long hint)
 	return rv;
 }
 
-static const struct filterops solisten_filtops =
-	{ 1, NULL, filt_sordetach, filt_solisten };
-static const struct filterops soread_filtops =
-	{ 1, NULL, filt_sordetach, filt_soread };
-static const struct filterops sowrite_filtops =
-	{ 1, NULL, filt_sowdetach, filt_sowrite };
+static const struct filterops solisten_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_sordetach,
+	.f_event = filt_solisten,
+};
+
+static const struct filterops soread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_sordetach,
+	.f_event = filt_soread,
+};
+
+static const struct filterops sowrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_sowdetach,
+	.f_event = filt_sowrite,
+};
 
 int
 soo_kqfilter(struct file *fp, struct knote *kn)
@@ -2409,6 +2444,33 @@ sopoll(struct socket *so, int events)
 	return revents;
 }
 
+struct mbuf **
+sbsavetimestamp(int opt, struct mbuf **mp)
+{
+	struct timeval tv;
+	microtime(&tv);
+
+#ifdef SO_OTIMESTAMP
+	if (opt & SO_OTIMESTAMP) {
+		struct timeval50 tv50;
+
+		timeval_to_timeval50(&tv, &tv50);
+		*mp = sbcreatecontrol(&tv50, sizeof(tv50),
+		    SCM_OTIMESTAMP, SOL_SOCKET);
+		if (*mp)
+			mp = &(*mp)->m_next;
+	} else
+#endif
+
+	if (opt & SO_TIMESTAMP) {
+		*mp = sbcreatecontrol(&tv, sizeof(tv),
+		    SCM_TIMESTAMP, SOL_SOCKET);
+		if (*mp)
+			mp = &(*mp)->m_next;
+	}
+	return mp;
+}
+
 
 #include <sys/sysctl.h>
 
@@ -2468,6 +2530,31 @@ sysctl_kern_sbmax(SYSCTLFN_ARGS)
 	return (error);
 }
 
+/*
+ * sysctl helper routine for kern.sooptions. Ensures that only allowed
+ * options can be set.
+ */
+static int
+sysctl_kern_sooptions(SYSCTLFN_ARGS)
+{
+	int error, new_options;
+	struct sysctlnode node;
+
+	new_options = sooptions;
+	node = *rnode;
+	node.sysctl_data = &new_options;
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error || newp == NULL)
+		return error;
+
+	if (new_options & ~SO_DEFOPTS)
+		return EINVAL;
+
+	sooptions = new_options;
+
+	return 0;
+}
+
 static void
 sysctl_kern_socket_setup(void)
 {
@@ -2488,4 +2575,11 @@ sysctl_kern_socket_setup(void)
 		       SYSCTL_DESCR("Maximum socket buffer size"),
 		       sysctl_kern_sbmax, 0, NULL, 0,
 		       CTL_KERN, KERN_SBMAX, CTL_EOL);
+
+	sysctl_createv(&socket_sysctllog, 0, NULL, NULL,
+		       CTLFLAG_PERMANENT|CTLFLAG_READWRITE,
+		       CTLTYPE_INT, "sooptions",
+		       SYSCTL_DESCR("Default socket options"),
+		       sysctl_kern_sooptions, 0, NULL, 0,
+		       CTL_KERN, CTL_CREATE, CTL_EOL);
 }

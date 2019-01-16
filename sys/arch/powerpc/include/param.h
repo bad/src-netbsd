@@ -1,4 +1,4 @@
-/*	$NetBSD: param.h,v 1.29 2013/01/29 15:47:16 kiyohara Exp $	*/
+/*	$NetBSD: param.h,v 1.31 2019/01/07 22:00:32 jdolecek Exp $	*/
 
 /*-
  * Copyright (C) 1995, 1996 Wolfgang Solfrank.
@@ -41,17 +41,26 @@
 #endif
 
 /*
- * Machine dependent constants for PowerPC (32-bit only currently)
+ * Machine dependent constants for PowerPC
  * For userland regardless of port, force MACHINE to be "powerpc"
  */
 #ifndef _KERNEL
 #undef MACHINE
 #endif
-#ifndef MACHINE
-#define	MACHINE		"powerpc"
+
+#ifdef _LP64
+# ifndef MACHINE
+#  define	MACHINE		"powerpc64"
+# endif
+# define	MACHINE_ARCH	"powerpc64"
+# define	MID_MACHINE	MID_POWERPC64
+#else
+# ifndef MACHINE
+#  define	MACHINE		"powerpc"
+# endif
+# define	MACHINE_ARCH	"powerpc"
+# define	MID_MACHINE	MID_POWERPC
 #endif
-#define	MACHINE_ARCH	"powerpc"
-#define	MID_MACHINE	MID_POWERPC
 
 /* PowerPC-specific macro to align a stack pointer (downwards). */
 #define	STACK_ALIGNBYTES	(16 - 1)	/* AltiVec */
@@ -66,12 +75,7 @@
 #define	NBPG		(1 << PGSHIFT)	/* Page size */
 #define	PGOFSET		(NBPG - 1)
 
-#define	DEV_BSHIFT	9		/* log2(DEV_BSIZE) */
-#define	DEV_BSIZE	(1 << DEV_BSHIFT)
 #define	BLKDEV_IOSIZE	NBPG
-#ifndef MAXPHYS
-#define	MAXPHYS		(64 * 1024)	/* max raw I/O transfer size */
-#endif
 
 #define	USPACE		(UPAGES * NBPG)
 
