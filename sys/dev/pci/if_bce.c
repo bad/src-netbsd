@@ -1,4 +1,4 @@
-/* $NetBSD: if_bce.c,v 1.42 2016/06/10 13:27:14 ozaki-r Exp $	 */
+/* $NetBSD: if_bce.c,v 1.49 2019/01/10 08:27:21 msaitoh Exp $	 */
 
 /*
  * Copyright (c) 2003 Clifford Wright. All rights reserved.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_bce.c,v 1.42 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_bce.c,v 1.49 2019/01/10 08:27:21 msaitoh Exp $");
 
 #include "vlan.h"
 
@@ -198,6 +198,11 @@ static const struct bce_product {
 		"Broadcom BCM4401-B0 10/100 Ethernet"
 	},
 	{
+		PCI_VENDOR_BROADCOM,
+		PCI_PRODUCT_BROADCOM_BCM4401_B1,
+		"Broadcom BCM4401-B1 10/100 Ethernet"
+	},
+	{
 
 		0,
 		0,
@@ -298,8 +303,9 @@ bce_attach(device_t parent, device_t self, void *aux)
 
 	/* Get it out of power save mode if needed. */
 	if (pci_get_capability(pc, pa->pa_tag, PCI_CAP_PWRMGMT, &pmreg, NULL)) {
-		pmode = pci_conf_read(pc, pa->pa_tag, pmreg + 4) & 0x3;
-		if (pmode == 3) {
+		pmode = pci_conf_read(pc, pa->pa_tag, pmreg + PCI_PMCSR)
+		    & PCI_PMCSR_STATE_MASK;
+		if (pmode == PCI_PMCSR_STATE_D3) {
 			/*
 			 * The card has lost all configuration data in
 			 * this state, so punt.
@@ -308,10 +314,10 @@ bce_attach(device_t parent, device_t self, void *aux)
 			    "unable to wake up from power state D3\n");
 			return;
 		}
-		if (pmode != 0) {
+		if (pmode != PCI_PMCSR_STATE_D0) {
 			aprint_normal_dev(self,
 			    "waking up from power state D%d\n", pmode);
-			pci_conf_write(pc, pa->pa_tag, pmreg + 4, 0);
+			pci_conf_write(pc, pa->pa_tag, pmreg + PCI_PMCSR, 0);
 		}
 	}
 	if (pci_intr_map(pa, &ih)) {
@@ -320,7 +326,8 @@ bce_attach(device_t parent, device_t self, void *aux)
 	}
 	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
 
-	sc->bce_intrhand = pci_intr_establish(pc, ih, IPL_NET, bce_intr, sc);
+	sc->bce_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, bce_intr,
+	    sc, device_xname(self));
 
 	if (sc->bce_intrhand == NULL) {
 		aprint_error_dev(self, "couldn't establish interrupt\n");
@@ -445,6 +452,7 @@ bce_attach(device_t parent, device_t self, void *aux)
 
 	/* Attach the interface */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	sc->enaddr[0] = bus_space_read_1(sc->bce_btag, sc->bce_bhandle,
 	    BCE_MAGIC_ENET0);
 	sc->enaddr[1] = bus_space_read_1(sc->bce_btag, sc->bce_bhandle,
@@ -623,7 +631,7 @@ bce_start(struct ifnet *ifp)
 		newpkts++;
 
 		/* Pass the packet to any BPF listeners. */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 	if (txsfree == 0) {
 		/* No more slots left; notify upper layer. */
@@ -713,7 +721,7 @@ bce_intr(void *xsc)
 			bce_init(ifp);
 		rnd_add_uint32(&sc->rnd_source, intstatus);
 		/* Try to get more packets going. */
-		bce_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 	return (handled);
 }
@@ -806,13 +814,6 @@ bce_rxintr(struct bce_softc *sc)
 
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
-		ifp->if_ipackets++;
-
-		/*
-		 * Pass this up to any BPF listeners, but only
-		 * pass it up the stack if it's for us.
-		 */
-		bpf_mtap(ifp, m);
 
 		/* Pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -1424,7 +1425,6 @@ bce_mii_write(device_t self, int phy, int reg, int val)
 			break;
 		delay(10);
 	}
-	rval = bus_space_read_4(sc->bce_btag, sc->bce_bhandle, BCE_MI_COMM);
 	if (i == BCE_TIMEOUT) {
 		aprint_error_dev(sc->bce_dev,
 		    "PHY timed out writing phy %d, reg %d, val = 0x%08x\n", phy,

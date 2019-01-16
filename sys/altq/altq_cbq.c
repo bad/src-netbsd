@@ -1,4 +1,4 @@
-/*	$NetBSD: altq_cbq.c,v 1.30 2016/06/20 08:30:58 knakahara Exp $	*/
+/*	$NetBSD: altq_cbq.c,v 1.32 2018/11/15 10:23:55 maxv Exp $	*/
 /*	$KAME: altq_cbq.c,v 1.21 2005/04/13 03:44:24 suz Exp $	*/
 
 /*
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: altq_cbq.c,v 1.30 2016/06/20 08:30:58 knakahara Exp $");
+__KERNEL_RCSID(0, "$NetBSD: altq_cbq.c,v 1.32 2018/11/15 10:23:55 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_altq.h"
@@ -471,6 +471,7 @@ cbq_getqstats(struct pf_altq *a, void *ubuf, int *nbytes)
 	if (*nbytes < sizeof(stats))
 		return (EINVAL);
 
+	memset(&stats, 0, sizeof(stats));
 	get_class_stats(&stats, cl);
 
 	if ((error = copyout((void *)&stats, ubuf, sizeof(stats))) != 0)
@@ -513,7 +514,7 @@ cbq_enqueue(struct ifaltq *ifq, struct mbuf *m)
 		return (ENOBUFS);
 	}
 	cl = NULL;
-	if ((t = m_tag_find(m, PACKET_TAG_ALTQ_QID, NULL)) != NULL)
+	if ((t = m_tag_find(m, PACKET_TAG_ALTQ_QID)) != NULL)
 		cl = clh_to_clp(cbqp, ((struct altq_tag *)(t+1))->qid);
 #ifdef ALTQ3_COMPAT
 	else if (ifq->altq_flags & ALTQF_CLASSIFY)
@@ -880,6 +881,7 @@ cbq_getstats(struct cbq_getstats *gsp)
 			if (++i >= CBQ_MAX_CLASSES)
 				goto out;
 
+		memset(&stats, 0, sizeof(stats));
 		get_class_stats(&stats, cl);
 		stats.handle = cl->stats_.handle;
 

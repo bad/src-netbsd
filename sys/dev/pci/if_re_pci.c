@@ -1,4 +1,4 @@
-/*	$NetBSD: if_re_pci.c,v 1.45 2015/12/14 20:01:17 jakllsch Exp $	*/
+/*	$NetBSD: if_re_pci.c,v 1.49 2018/11/13 20:12:45 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 1997, 1998-2003
@@ -46,7 +46,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_re_pci.c,v 1.45 2015/12/14 20:01:17 jakllsch Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_re_pci.c,v 1.49 2018/11/13 20:12:45 jdolecek Exp $");
 
 #include <sys/types.h>
 
@@ -240,6 +240,9 @@ re_pci_attach(device_t parent, device_t self, void *aux)
 	    t->rtk_basetype == RTK_8101E)
 		sc->sc_quirk |= RTKQ_PCIE;
 
+	if (t->rtk_basetype == RTK_8168)
+		sc->sc_quirk |= RTKQ_IM_HW;
+
 	if (pci_dma64_available(pa) && (sc->sc_quirk & RTKQ_PCIE))
 		sc->sc_dmat = pa->pa_dmat64;
 	else
@@ -259,8 +262,8 @@ re_pci_attach(device_t parent, device_t self, void *aux)
 	}
 	intrstr = pci_intr_string(pc, psc->sc_pihp[0], intrbuf,
 	    sizeof(intrbuf));
-	psc->sc_ih = pci_intr_establish(pc, psc->sc_pihp[0], IPL_NET,
-	    re_intr, sc);
+	psc->sc_ih = pci_intr_establish_xname(pc, psc->sc_pihp[0], IPL_NET,
+	    re_intr, sc, device_xname(sc->sc_dev));
 	if (psc->sc_ih == NULL) {
 		aprint_error_dev(self, "couldn't establish interrupt");
 		if (intrstr != NULL)

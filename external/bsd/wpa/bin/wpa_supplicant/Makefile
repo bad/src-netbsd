@@ -1,19 +1,22 @@
-# $NetBSD: Makefile,v 1.8 2016/06/29 19:16:23 christos Exp $
+# $NetBSD: Makefile,v 1.10 2019/01/04 21:22:20 christos Exp $
 
 .include "${.CURDIR}/../Makefile.inc"
 
 PROG=	wpa_supplicant
 SRCS= \
 base64.c \
+bitfield.c \
 blacklist.c \
 bss.c \
 common.c \
 config.c \
 config_file.c \
 ctrl_iface.c \
+ctrl_iface_common.c \
 ctrl_iface_unix.c \
 driver_common.c \
 driver_bsd.c \
+driver_wired_common.c \
 driver_wired.c \
 drivers.c \
 eap_common.c \
@@ -27,10 +30,11 @@ ieee802_11_common.c \
 l2_packet_freebsd.c \
 main.c \
 notify.c \
+op_classes.c \
 os_unix.c \
-peerkey.c \
 pmksa_cache.c \
 preauth.c \
+rrm.c \
 random.c \
 scan.c \
 sha1-prf.c \
@@ -43,13 +47,15 @@ wpa_supplicant.c \
 wpabuf.c \
 wpas_glue.c
 
+
 MAN=	wpa_supplicant.8 wpa_supplicant.conf.5
 
 .PATH.c:  \
 	${WPA_SUPPLICANT_DISTDIR} \
 	${WPA_DISTDIR}/src/drivers \
 	${WPA_DISTDIR}/src/eap_peer \
-	${WPA_DISTDIR}/src/rsn_supp
+	${WPA_DISTDIR}/src/rsn_supp \
+	${COMMON_PATH}
 
 CPPFLAGS+= \
 	-I${WPA_SUPPLICANT_DISTDIR} \
@@ -66,6 +72,22 @@ CPPFLAGS+=-DCONFIG_CTRL_IFACE_UNIX
 CPPFLAGS+=-DCONFIG_SMARTCARD
 CPPFLAGS+=-DCONFIG_DEBUG_FILE
 CPPFLAGS+=-DCONFIG_DEBUG_SYSLOG
+
+#CPPFLAGS+=-DCONFIG_FST
+#SRCS+=fst.c \
+#fst_ctrl_aux.c \
+#fst_ctrl_iface.c \
+#fst_group.c \
+#fst_iface.c \
+#fst_session.c
+
+#CPPFLAGS+=-DCONFIG_ACS
+#CPPFLAGS+=-DCONFIG_MBO
+#CPPFLAGS+=-DCONFIG_WNM 
+#CPPFLAGS+=-DCONFIG_AP
+#SRCS+=ap.c \
+#gas.c \
+#mbo.c 
 
 DPADD+=	${LIBPCAP}
 LDADD+=	-lpcap

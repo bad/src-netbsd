@@ -1,4 +1,4 @@
-/* $NetBSD: auixp.c,v 1.42 2016/07/07 06:55:41 msaitoh Exp $ */
+/* $NetBSD: auixp.c,v 1.44 2018/12/09 11:14:01 jdolecek Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Reinoud Zandijk <reinoud@netbsd.org>
@@ -50,7 +50,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: auixp.c,v 1.42 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: auixp.c,v 1.44 2018/12/09 11:14:01 jdolecek Exp $");
 
 #include <sys/types.h>
 #include <sys/errno.h>
@@ -470,8 +470,6 @@ auixp_malloc(void *hdl, int direction, size_t size)
 	sc = co->sc;
 	/* get us a auixp_dma structure */
 	dma = kmem_alloc(sizeof(*dma), KM_SLEEP);
-	if (!dma)
-		return NULL;
 
 	/* get us a dma buffer itself */
 	error = auixp_allocmem(sc, size, 16, dma);
@@ -644,8 +642,6 @@ auixp_allocate_dma_chain(struct auixp_softc *sc, struct auixp_dma **dmap)
 	/* allocate keeper of dma area */
 	*dmap = NULL;
 	dma = kmem_zalloc(sizeof(struct auixp_dma), KM_SLEEP);
-	if (!dma)
-		return ENOMEM;
 
 	/* allocate for daisychain of IXP hardware-dma descriptors */
 	error = auixp_allocmem(sc, DMA_DESC_CHAIN * sizeof(atiixp_dma_desc_t),
@@ -1169,7 +1165,8 @@ auixp_attach(device_t parent, device_t self, void *aux)
 	mutex_init(&sc->sc_intr_lock, MUTEX_DEFAULT, IPL_AUDIO);
 
 	/* establish interrupt routine hookup at IPL_AUDIO level */
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_AUDIO, auixp_intr, self);
+	sc->sc_ih = pci_intr_establish_xname(pc, ih, IPL_AUDIO, auixp_intr,
+	    self, device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "can't establish interrupt");
 		if (intrstr != NULL)

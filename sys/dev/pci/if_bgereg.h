@@ -1,4 +1,4 @@
-/*	$NetBSD: if_bgereg.h,v 1.91 2015/05/17 12:06:26 msaitoh Exp $	*/
+/*	$NetBSD: if_bgereg.h,v 1.94 2018/12/02 17:02:04 bouyer Exp $	*/
 /*
  * Copyright (c) 2001 Wind River Systems
  * Copyright (c) 1997, 1998, 1999, 2001
@@ -349,6 +349,7 @@
 #define	BGE_CHIPID_BCM5720_A0		0x05720000
 #define	BGE_CHIPID_BCM57765_A0		0x57785000
 #define	BGE_CHIPID_BCM57765_B0		0x57785100
+#define	BGE_CHIPID_BCM57766_A0		0x57766000
 
 /* shorthand one */
 #define BGE_ASICREV(x)			((x) >> 12)
@@ -1546,6 +1547,11 @@
 #define	BGE_RDMA_LSO_CRPTEN_CTRL_BLEN_BD_512	0x00020000
 #define	BGE_RDMA_LSO_CRPTEN_CTRL_BLEN_BD_4K	0x00030000
 #define	BGE_RDMA_LSO_CRPTEN_CTRL_BLEN_LSO_4K	0x000C0000
+#define BGE_RDMA_TX_LENGTH_WA_5719		0x02000000
+#define BGE_RDMA_TX_LENGTH_WA_5720		0x00200000
+
+#define BGE_RDMA_LENGTH			0x4BE0
+#define BGE_NUM_RDMA_CHANNELS		4
 
 /*
  * Write DMA control registers
@@ -1944,6 +1950,27 @@
 #define	BGE_TLP_PHYCTL5			0x0014
 #define	BGE_TLP_PHYCTL5_DIS_L2CLKREQ	0x80000000
 #define	BGE_TLP_DATA_FIFO_PROTECT	0x02000000
+
+/*
+ * PCIe L1 config registers?
+ */
+#define	BGE_PCIE_PWRMNG_THRESH		0x7d28
+#define	BGE_PCIE_LINKCTL		0x7d54
+#define	BGE_PCIE_EIDLE_DELAY		0x7e70
+
+/* PCIe Power Management register */
+#define	BGE_PCIE_PWRMNG_L1THRESH_MASK	0x0000ff00
+#define	BGE_PCIE_PWRMNG_L1THRESH_4MS	0x0000ff00
+#define	BGE_PCIE_PWRMNG_EXTASPMTMR_EN	0x01000000
+
+/* PCIe link control register */
+#define	BGE_PCIE_LINKCTL_L1_PLL_PDEN	0x00000008
+#define	BGE_PCIE_LINKCTL_L1_PLL_PDDIS	0x00000080
+
+/* PCIe Enhanced idle delay register */
+#define	BGE_PCIE_EIDLE_DELAY_MASK	0x0000001f
+#define	BGE_PCIE_EIDLE_DELAY_13CLK	0x0000000c
+
 
 /*
  * PHY Test Control Register

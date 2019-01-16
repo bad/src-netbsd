@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -79,6 +79,7 @@
 #define ACPI_MAX_EXTPARSE_CACHE_DEPTH   96          /* Parse tree objects */
 #define ACPI_MAX_OBJECT_CACHE_DEPTH     96          /* Interpreter operand objects */
 #define ACPI_MAX_NAMESPACE_CACHE_DEPTH  96          /* Namespace objects */
+#define ACPI_MAX_COMMENT_CACHE_DEPTH    96          /* Comments for the -ca option */
 
 /*
  * Should the subsystem abort the loading of an ACPI table if the
@@ -124,7 +125,7 @@
 
 /* Maximum object reference count (detects object deletion issues) */
 
-#define ACPI_MAX_REFERENCE_COUNT        0x800
+#define ACPI_MAX_REFERENCE_COUNT        0x4000
 
 /* Default page size for use in mapping memory for operation regions */
 
@@ -145,6 +146,10 @@
 /* Address Range lists are per-SpaceId (Memory and I/O only) */
 
 #define ACPI_ADDRESS_RANGE_MAX          2
+
+/* Maximum time (default 30s) of While() loops before abort */
+
+#define ACPI_MAX_LOOP_TIMEOUT           30
 
 
 /******************************************************************************
@@ -205,11 +210,21 @@
 #define ACPI_RSDP_CHECKSUM_LENGTH       20
 #define ACPI_RSDP_XCHECKSUM_LENGTH      36
 
-/* SMBus, GSBus and IPMI bidirectional buffer size */
+/*
+ * SMBus, GSBus and IPMI buffer sizes. All have a 2-byte header,
+ * containing both Status and Length.
+ */
+#define ACPI_SERIAL_HEADER_SIZE         2   /* Common for below. Status and Length fields */
 
-#define ACPI_SMBUS_BUFFER_SIZE          34
-#define ACPI_GSBUS_BUFFER_SIZE          34
-#define ACPI_IPMI_BUFFER_SIZE           66
+#define ACPI_SMBUS_DATA_SIZE            32
+#define ACPI_SMBUS_BUFFER_SIZE          ACPI_SERIAL_HEADER_SIZE + ACPI_SMBUS_DATA_SIZE
+
+#define ACPI_IPMI_DATA_SIZE             64
+#define ACPI_IPMI_BUFFER_SIZE           ACPI_SERIAL_HEADER_SIZE + ACPI_IPMI_DATA_SIZE
+
+#define ACPI_MAX_GSBUS_DATA_SIZE        255
+#define ACPI_MAX_GSBUS_BUFFER_SIZE      ACPI_SERIAL_HEADER_SIZE + ACPI_MAX_GSBUS_DATA_SIZE
+
 
 /* _SxD and _SxW control methods */
 

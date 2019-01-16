@@ -1,4 +1,4 @@
-/*      $NetBSD: procfs_linux.c,v 1.72 2016/03/28 17:23:47 mlelstv Exp $      */
+/*      $NetBSD: procfs_linux.c,v 1.74 2018/12/05 18:16:51 christos Exp $      */
 
 /*
  * Copyright (c) 2001 Wasabi Systems, Inc.
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: procfs_linux.c,v 1.72 2016/03/28 17:23:47 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: procfs_linux.c,v 1.74 2018/12/05 18:16:51 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -383,7 +383,7 @@ procfs_do_pid_statm(struct lwp *curl, struct lwp *l,
 	mutex_enter(p->p_lock);
 
 	/* retrieve RSS size */
-	fill_kproc2(p, &ki, false);
+	fill_kproc2(p, &ki, false, false);
 
 	mutex_exit(p->p_lock);
 	mutex_exit(proc_lock);
@@ -440,7 +440,7 @@ procfs_do_pid_stat(struct lwp *curl, struct lwp *l,
 	mutex_enter(proc_lock);
 	mutex_enter(p->p_lock);
 
-	fill_kproc2(p, &ki, false);
+	fill_kproc2(p, &ki, false, false);
 	calcru(p, NULL, NULL, NULL, &rt);
 
 	len = snprintf(bf, LBFSZ,
@@ -603,26 +603,22 @@ procfs_domounts(struct lwp *curl, struct proc *p,
 {
 	char *bf, *mtab = NULL;
 	size_t mtabsz = 0;
-	struct mount *mp, *nmp;
+	mount_iterator_t *iter;
+	struct mount *mp;
 	int error = 0, root = 0;
 	struct cwdinfo *cwdi = curl->l_proc->p_cwdi;
 
 	bf = malloc(LBFSZ, M_TEMP, M_WAITOK);
 
-	mutex_enter(&mountlist_lock);
-	for (mp = TAILQ_FIRST(&mountlist); mp != NULL; mp = nmp) {
+	mountlist_iterator_init(&iter);
+	while ((mp = mountlist_iterator_next(iter)) != NULL) {
 		struct statvfs sfs;
-
-		if (vfs_busy(mp, &nmp))
-			continue;
 
 		if ((error = dostatvfs(mp, &sfs, curl, MNT_WAIT, 0)) == 0)
 			root |= procfs_format_sfs(&mtab, &mtabsz, bf, LBFSZ,
 			    &sfs, curl, 0);
-
-		vfs_unbusy(mp, false, &nmp);
 	}
-	mutex_exit(&mountlist_lock);
+	mountlist_iterator_destroy(iter);
 
 	/*
 	 * If we are inside a chroot that is not itself a mount point,

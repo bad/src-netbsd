@@ -44,8 +44,11 @@ static void eap_server_tls_log_cb(void *ctx, const char *msg)
 
 
 int eap_server_tls_ssl_init(struct eap_sm *sm, struct eap_ssl_data *data,
-			    int verify_peer)
+			    int verify_peer, int eap_type)
 {
+	u8 session_ctx[8];
+	unsigned int flags = sm->tls_flags;
+
 	if (sm->ssl_ctx == NULL) {
 		wpa_printf(MSG_ERROR, "TLS context not initialized - cannot use TLS-based EAP method");
 		return -1;
@@ -68,7 +71,13 @@ int eap_server_tls_ssl_init(struct eap_sm *sm, struct eap_ssl_data *data,
 #endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_TLS_INTERNAL */
 
-	if (tls_connection_set_verify(sm->ssl_ctx, data->conn, verify_peer)) {
+	if (eap_type != EAP_TYPE_FAST)
+		flags |= TLS_CONN_DISABLE_SESSION_TICKET;
+	os_memcpy(session_ctx, "hostapd", 7);
+	session_ctx[7] = (u8) eap_type;
+	if (tls_connection_set_verify(sm->ssl_ctx, data->conn, verify_peer,
+				      flags, session_ctx,
+				      sizeof(session_ctx))) {
 		wpa_printf(MSG_INFO, "SSL: Failed to configure verification "
 			   "of TLS peer certificate");
 		tls_connection_deinit(sm->ssl_ctx, data->conn);
@@ -98,45 +107,21 @@ void eap_server_tls_ssl_deinit(struct eap_sm *sm, struct eap_ssl_data *data)
 
 
 u8 * eap_server_tls_derive_key(struct eap_sm *sm, struct eap_ssl_data *data,
-			       char *label, size_t len)
+			       const char *label, size_t len)
 {
-	struct tls_keys keys;
-	u8 *rnd = NULL, *out;
+	u8 *out;
 
 	out = os_malloc(len);
 	if (out == NULL)
 		return NULL;
 
-	if (tls_connection_prf(sm->ssl_ctx, data->conn, label, 0, out, len) ==
-	    0)
-		return out;
+	if (tls_connection_export_key(sm->ssl_ctx, data->conn, label, out,
+				      len)) {
+		os_free(out);
+		return NULL;
+	}
 
-	if (tls_connection_get_keys(sm->ssl_ctx, data->conn, &keys))
-		goto fail;
-
-	if (keys.client_random == NULL || keys.server_random == NULL ||
-	    keys.master_key == NULL)
-		goto fail;
-
-	rnd = os_malloc(keys.client_random_len + keys.server_random_len);
-	if (rnd == NULL)
-		goto fail;
-	os_memcpy(rnd, keys.client_random, keys.client_random_len);
-	os_memcpy(rnd + keys.client_random_len, keys.server_random,
-		  keys.server_random_len);
-
-	if (tls_prf_sha1_md5(keys.master_key, keys.master_key_len,
-			     label, rnd, keys.client_random_len +
-			     keys.server_random_len, out, len))
-		goto fail;
-
-	os_free(rnd);
 	return out;
-
-fail:
-	os_free(out);
-	os_free(rnd);
-	return NULL;
 }
 
 
@@ -157,10 +142,17 @@ u8 * eap_server_tls_derive_session_id(struct eap_sm *sm,
 				      struct eap_ssl_data *data, u8 eap_type,
 				      size_t *len)
 {
-	struct tls_keys keys;
+	struct tls_random keys;
 	u8 *out;
 
-	if (tls_connection_get_keys(sm->ssl_ctx, data->conn, &keys))
+	if (eap_type == EAP_TYPE_TLS && data->tls_v13) {
+		*len = 64;
+		return eap_server_tls_derive_key(sm, data,
+						 "EXPORTER_EAP_TLS_Session-Id",
+						 64);
+	}
+
+	if (tls_connection_get_random(sm->ssl_ctx, data->conn, &keys))
 		return NULL;
 
 	if (keys.client_random == NULL || keys.server_random == NULL)
@@ -326,6 +318,8 @@ static int eap_server_tls_process_fragment(struct eap_ssl_data *data,
 
 int eap_server_tls_phase1(struct eap_sm *sm, struct eap_ssl_data *data)
 {
+	char buf[20];
+
 	if (data->tls_out) {
 		/* This should not happen.. */
 		wpa_printf(MSG_INFO, "SSL: pending tls_out data when "
@@ -347,6 +341,16 @@ int eap_server_tls_phase1(struct eap_sm *sm, struct eap_ssl_data *data)
 			   "report error");
 		return -1;
 	}
+
+	if (tls_get_version(sm->ssl_ctx, data->conn, buf, sizeof(buf)) == 0) {
+		wpa_printf(MSG_DEBUG, "SSL: Using TLS version %s", buf);
+		data->tls_v13 = os_strcmp(buf, "TLSv1.3") == 0;
+	}
+
+	if (!sm->serial_num &&
+	    tls_connection_established(sm->ssl_ctx, data->conn))
+		sm->serial_num = tls_connection_peer_serial_num(sm->ssl_ctx,
+								data->conn);
 
 	return 0;
 }
@@ -394,7 +398,7 @@ static int eap_server_tls_reassemble(struct eap_ssl_data *data, u8 flags,
 	if (data->tls_in &&
 	    eap_server_tls_process_cont(data, *pos, end - *pos) < 0)
 		return -1;
-		
+
 	if (flags & EAP_TLS_FLAGS_MORE_FRAGMENTS) {
 		if (eap_server_tls_process_fragment(data, flags, tls_msg_len,
 						    *pos, end - *pos) < 0)

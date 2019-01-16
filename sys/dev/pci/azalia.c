@@ -1,4 +1,4 @@
-/*	$NetBSD: azalia.c,v 1.83 2014/11/09 19:57:53 nonaka Exp $	*/
+/*	$NetBSD: azalia.c,v 1.85 2018/12/09 11:14:01 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2005, 2008 The NetBSD Foundation, Inc.
@@ -41,7 +41,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: azalia.c,v 1.83 2014/11/09 19:57:53 nonaka Exp $");
+__KERNEL_RCSID(0, "$NetBSD: azalia.c,v 1.85 2018/12/09 11:14:01 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -337,7 +337,8 @@ azalia_pci_attach(device_t parent, device_t self, void *aux)
 	sc->pc = pa->pa_pc;
 	sc->tag = pa->pa_tag;
 	intrrupt_str = pci_intr_string(pa->pa_pc, ih, intrbuf, sizeof(intrbuf));
-	sc->ih = pci_intr_establish(pa->pa_pc, ih, IPL_AUDIO, azalia_intr, sc);
+	sc->ih = pci_intr_establish_xname(pa->pa_pc, ih, IPL_AUDIO, azalia_intr,
+	    sc, device_xname(self));
 	if (sc->ih == NULL) {
 		aprint_error_dev(self, "can't establish interrupt");
 		if (intrrupt_str != NULL)
@@ -1384,11 +1385,6 @@ azalia_codec_construct_format(codec_t *this, int newdac, int newadc)
 	this->nformats = 0;
 	this->szformats = sizeof(struct audio_format) * variation;
 	this->formats = kmem_zalloc(this->szformats, KM_SLEEP);
-	if (this->formats == NULL) {
-		aprint_error("%s: out of memory in %s\n",
-		    device_xname(this->dev), __func__);
-		return ENOMEM;
-	}
 
 	/* register formats for playback */
 	if (this->dacs.cur >= 0 && this->dacs.cur < this->dacs.ngroups) {
@@ -1900,10 +1896,6 @@ azalia_widget_init_connection(widget_t *this, const codec_t *codec,
 		return 0;
 	this->nconnections = length;
 	this->connections = kmem_alloc(sizeof(nid_t) * (length + 3), KM_SLEEP);
-	if (this->connections == NULL) {
-		aprint_error("%s: out of memory\n", device_xname(codec->dev));
-		return ENOMEM;
-	}
 	if (longform) {
 		for (i = 0; i < length;) {
 			err = codec->comresp(codec, this->nid,

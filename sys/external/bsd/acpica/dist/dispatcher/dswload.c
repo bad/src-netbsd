@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -113,12 +113,10 @@ AcpiDsInitCallbacks (
 
         /* Execution pass */
 
-#ifndef ACPI_NO_METHOD_EXECUTION
         WalkState->ParseFlags        |= ACPI_PARSE_EXECUTE  |
                                         ACPI_PARSE_DELETE_TREE;
         WalkState->DescendingCallback = AcpiDsExecBeginOp;
         WalkState->AscendingCallback  = AcpiDsExecEndOp;
-#endif
         break;
 
     default:
@@ -156,7 +154,7 @@ AcpiDsLoad1BeginOp (
     UINT32                  Flags;
 
 
-    ACPI_FUNCTION_TRACE (DsLoad1BeginOp);
+    ACPI_FUNCTION_TRACE_PTR (DsLoad1BeginOp, WalkState->Op);
 
 
     Op = WalkState->Op;
@@ -217,7 +215,7 @@ AcpiDsLoad1BeginOp (
 #endif
         if (ACPI_FAILURE (Status))
         {
-            ACPI_ERROR_NAMESPACE (Path, Status);
+            ACPI_ERROR_NAMESPACE (WalkState->ScopeInfo, Path, Status);
             return_ACPI_STATUS (Status);
         }
 
@@ -387,7 +385,7 @@ AcpiDsLoad1BeginOp (
 
             if (ACPI_FAILURE (Status))
             {
-                ACPI_ERROR_NAMESPACE (Path, Status);
+                ACPI_ERROR_NAMESPACE (WalkState->ScopeInfo, Path, Status);
                 return_ACPI_STATUS (Status);
             }
         }
@@ -409,8 +407,8 @@ AcpiDsLoad1BeginOp (
 
     /* Initialize the op */
 
-#if (defined (ACPI_NO_METHOD_EXECUTION) || defined (ACPI_CONSTANT_EVAL_ONLY))
-    Op->Named.Path = ACPI_CAST_PTR (UINT8, Path);
+#ifdef ACPI_CONSTANT_EVAL_ONLY
+    Op->Named.Path = Path;
 #endif
 
     if (Node)
@@ -450,6 +448,10 @@ AcpiDsLoad1EndOp (
     ACPI_OBJECT_TYPE        ObjectType;
     ACPI_STATUS             Status = AE_OK;
 
+#ifdef ACPI_ASL_COMPILER
+    UINT8                   ParamCount;
+#endif
+
 
     ACPI_FUNCTION_TRACE (DsLoad1EndOp);
 
@@ -468,7 +470,6 @@ AcpiDsLoad1EndOp (
 
     ObjectType = WalkState->OpInfo->ObjectType;
 
-#ifndef ACPI_NO_METHOD_EXECUTION
     if (WalkState->OpInfo->Flags & AML_FIELD)
     {
         /*
@@ -514,7 +515,6 @@ AcpiDsLoad1EndOp (
             }
         }
     }
-#endif
 
     if (Op->Common.AmlOpcode == AML_NAME_OP)
     {
@@ -533,6 +533,37 @@ AcpiDsLoad1EndOp (
             }
         }
     }
+
+#ifdef ACPI_ASL_COMPILER
+    /*
+     * For external opcode, get the object type from the argument and
+     * get the parameter count from the argument's next.
+     */
+    if (AcpiGbl_DisasmFlag &&
+        Op->Common.Node &&
+        Op->Common.AmlOpcode == AML_EXTERNAL_OP)
+    {
+        /*
+         * Note, if this external is not a method
+         * Op->Common.Value.Arg->Common.Next->Common.Value.Integer == 0
+         * Therefore, ParamCount will be 0.
+         */
+        ParamCount = (UINT8) Op->Common.Value.Arg->Common.Next->Common.Value.Integer;
+        ObjectType = (UINT8) Op->Common.Value.Arg->Common.Value.Integer;
+        Op->Common.Node->Flags |= ANOBJ_IS_EXTERNAL;
+        Op->Common.Node->Type = (UINT8) ObjectType;
+
+        AcpiDmCreateSubobjectForExternal ((UINT8)ObjectType,
+            &Op->Common.Node, ParamCount);
+
+        /*
+         * Add the external to the external list because we may be
+         * emitting code based off of the items within the external list.
+         */
+        AcpiDmAddOpToExternalList (Op, Op->Named.Path, (UINT8)ObjectType, ParamCount,
+           ACPI_EXT_ORIGIN_FROM_OPCODE | ACPI_EXT_RESOLVED_REFERENCE);
+    }
+#endif
 
     /*
      * If we are executing a method, do not create any namespace objects
@@ -581,6 +612,7 @@ AcpiDsLoad1EndOp (
     /* Pop the scope stack (only if loading a table) */
 
     if (!WalkState->MethodNode &&
+        Op->Common.AmlOpcode != AML_EXTERNAL_OP &&
         AcpiNsOpensScope (ObjectType))
     {
         ACPI_DEBUG_PRINT ((ACPI_DB_DISPATCH, "(%s): Popping scope for Op %p\n",

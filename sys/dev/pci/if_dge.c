@@ -1,4 +1,4 @@
-/*	$NetBSD: if_dge.c,v 1.45 2016/07/07 06:55:41 msaitoh Exp $ */
+/*	$NetBSD: if_dge.c,v 1.50 2018/12/09 11:14:02 jdolecek Exp $ */
 
 /*
  * Copyright (c) 2004, SUNET, Swedish University Computer Network.
@@ -80,7 +80,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_dge.c,v 1.45 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_dge.c,v 1.50 2018/12/09 11:14:02 jdolecek Exp $");
 
 
 
@@ -744,7 +744,8 @@ dge_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_NET, dge_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(pc, ih, IPL_NET, dge_intr, sc,
+	    device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "unable to establish interrupt");
 		if (intrstr != NULL)
@@ -925,7 +926,7 @@ dge_attach(device_t parent, device_t self, void *aux)
 	ifp->if_watchdog = dge_watchdog;
 	ifp->if_init = dge_init;
 	ifp->if_stop = dge_stop;
-	IFQ_SET_MAXLEN(&ifp->if_snd, max(DGE_IFQUEUELEN, IFQ_MAXLEN));
+	IFQ_SET_MAXLEN(&ifp->if_snd, uimax(DGE_IFQUEUELEN, IFQ_MAXLEN));
 	IFQ_SET_READY(&ifp->if_snd);
 
 	sc->sc_ethercom.ec_capabilities |=
@@ -943,6 +944,7 @@ dge_attach(device_t parent, device_t self, void *aux)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
 	    RND_TYPE_NET, RND_FLAG_DEFAULT);
@@ -1391,7 +1393,7 @@ dge_start(struct ifnet *ifp)
 		sc->sc_txsnext = DGE_NEXTTXS(sc->sc_txsnext);
 
 		/* Pass the packet to any BPF listeners. */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->sc_txsfree == 0 || sc->sc_txfree <= 2) {
@@ -1578,7 +1580,7 @@ dge_intr(void *arg)
 			dge_init(ifp);
 
 		/* Try to get more packets going. */
-		dge_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 
 	return (handled);
@@ -1806,11 +1808,6 @@ dge_rxintr(struct dge_softc *sc)
 			if (errors & RDESC_ERR_TCPE)
 				m->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
 		}
-
-		ifp->if_ipackets++;
-
-		/* Pass this up to any BPF listeners. */
-		bpf_mtap(ifp, m);
 
 		/* Pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);
