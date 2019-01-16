@@ -1,4 +1,4 @@
-/*	$NetBSD: if_lii.c,v 1.15 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_lii.c,v 1.19 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*
  *  Copyright (c) 2008 The NetBSD Foundation.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_lii.c,v 1.15 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_lii.c,v 1.19 2018/12/09 11:14:02 jdolecek Exp $");
 
 
 #include <sys/param.h>
@@ -293,7 +293,8 @@ lii_attach(device_t parent, device_t self, void *aux)
 		goto fail;
 	}
 	intrstr = pci_intr_string(sc->sc_pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(sc->sc_pc, ih, IPL_NET, lii_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(sc->sc_pc, ih, IPL_NET, lii_intr,
+	    sc, device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(self, "failed to establish interrupt");
 		if (intrstr != NULL)
@@ -336,6 +337,7 @@ lii_attach(device_t parent, device_t self, void *aux)
 	sc->sc_ec.ec_capabilities = ETHERCAP_VLAN_MTU;
 
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, eaddr);
 
 	if (pmf_device_register(self, NULL, NULL))
@@ -888,7 +890,7 @@ lii_start(struct ifnet *ifp)
 
 		IFQ_DEQUEUE(&ifp->if_snd, m0);
 
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 		m_freem(m0);
 	}
 }
@@ -997,9 +999,6 @@ lii_rxintr(struct lii_softc *sc)
 		/* Copy the packet withhout the FCS */
 		m->m_pkthdr.len = m->m_len = size;
 		memcpy(mtod(m, void *), &rxp->rxp_data[0], size);
-		++ifp->if_ipackets;
-
-		bpf_mtap(ifp, m);
 
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 	}
@@ -1048,7 +1047,7 @@ lii_txintr(struct lii_softc *sc)
 	}
 
 	if (sc->sc_free_tx_slots)
-		lii_start(ifp);
+		if_schedule_deferred_start(ifp);
 }
 
 static int

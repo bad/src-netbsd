@@ -1,4 +1,4 @@
-/*	$NetBSD: dkwedge_gpt.c,v 1.17 2016/04/28 00:35:24 christos Exp $	*/
+/*	$NetBSD: dkwedge_gpt.c,v 1.21 2018/11/06 04:04:33 mrg Exp $	*/
 
 /*-
  * Copyright (c) 2004 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: dkwedge_gpt.c,v 1.17 2016/04/28 00:35:24 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: dkwedge_gpt.c,v 1.21 2018/11/06 04:04:33 mrg Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -73,6 +73,9 @@ static const struct {
 	{ GPT_ENT_TYPE_NETBSD_CCD,		DKW_PTYPE_CCD },
 	{ GPT_ENT_TYPE_NETBSD_CGD,		DKW_PTYPE_CGD },
 	{ GPT_ENT_TYPE_APPLE_HFS,		DKW_PTYPE_APPLEHFS },
+	{ GPT_ENT_TYPE_VMWARE_VMKCORE,		DKW_PTYPE_VMKCORE },
+	{ GPT_ENT_TYPE_VMWARE_VMFS,		DKW_PTYPE_VMFS },
+	{ GPT_ENT_TYPE_VMWARE_RESERVED,		DKW_PTYPE_VMWRESV },
 };
 
 static const char *
@@ -239,20 +242,21 @@ dkwedge_discover_gpt(struct disk *pdk, struct vnode *vp)
 
 		/* figure out the type */
 		ptype = gpt_ptype_guid_to_str(&ptype_guid);
-		strcpy(dkw.dkw_ptype, ptype);
+		strlcpy(dkw.dkw_ptype, ptype, sizeof(dkw.dkw_ptype));
 
-		strcpy(dkw.dkw_parent, pdk->dk_name);
+		strlcpy(dkw.dkw_parent, pdk->dk_name, sizeof(dkw.dkw_parent));
 		dkw.dkw_offset = le64toh(ent->ent_lba_start);
 		dkw.dkw_size = le64toh(ent->ent_lba_end) - dkw.dkw_offset + 1;
 
 		/* XXX Make sure it falls within the disk's data area. */
 
 		if (ent->ent_name[0] == 0x0000)
-			strcpy(dkw.dkw_wname, ent_guid_str);
+			strlcpy(dkw.dkw_wname, ent_guid_str, sizeof(dkw.dkw_wname));
 		else {
 			c = dkw.dkw_wname;
 			r = sizeof(dkw.dkw_wname) - 1;
-			for (j = 0; ent->ent_name[j] != 0x0000; j++) {
+			for (j = 0; j < __arraycount(ent->ent_name)
+			    && ent->ent_name[j] != 0x0000; j++) {
 				n = wput_utf8(c, r, le16toh(ent->ent_name[j]));
 				if (n == 0)
 					break;
@@ -268,8 +272,8 @@ dkwedge_discover_gpt(struct disk *pdk, struct vnode *vp)
 		if ((error = dkwedge_add(&dkw)) == EEXIST &&
 		    strcmp(dkw.dkw_wname, ent_guid_str) != 0) {
 			char orig[sizeof(dkw.dkw_wname)];
-			strcpy(orig, dkw.dkw_wname);
-			strcpy(dkw.dkw_wname, ent_guid_str);
+			strlcpy(orig, dkw.dkw_wname, sizeof(orig));
+			strlcpy(dkw.dkw_wname, ent_guid_str, sizeof(dkw.dkw_wname));
 			error = dkwedge_add(&dkw);
 			if (!error)
 				aprint_error("%s: wedge named '%s' already "

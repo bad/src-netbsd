@@ -1,4 +1,4 @@
-/*	$NetBSD: if_cas.c,v 1.24 2016/02/09 08:32:11 ozaki-r Exp $	*/
+/*	$NetBSD: if_cas.c,v 1.29 2018/12/09 11:14:02 jdolecek Exp $	*/
 /*	$OpenBSD: if_cas.c,v 1.29 2009/11/29 16:19:38 kettenis Exp $	*/
 
 /*
@@ -44,7 +44,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_cas.c,v 1.24 2016/02/09 08:32:11 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_cas.c,v 1.29 2018/12/09 11:14:02 jdolecek Exp $");
 
 #ifndef _MODULE
 #include "opt_inet.h"
@@ -609,6 +609,7 @@ cas_config(struct cas_softc *sc, const uint8_t *enaddr)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
@@ -1288,7 +1289,7 @@ cas_rint(struct cas_softc *sc)
 			    rxs->rxs_dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
 
 			cp = rxs->rxs_kva + off * 256 + ETHER_ALIGN;
-			m = m_devget(cp, len, 0, ifp, NULL);
+			m = m_devget(cp, len, 0, ifp);
 		
 			if (word[0] & CAS_RC0_RELEASE_HDR)
 				cas_add_rxbuf(sc, idx);
@@ -1299,9 +1300,6 @@ cas_rint(struct cas_softc *sc)
 				 * Pass this up to any BPF listeners, but only
 				 * pass it up the stack if its for us.
 				 */
-				bpf_mtap(ifp, m);
-
-				ifp->if_ipackets++;
 				m->m_pkthdr.csum_flags = 0;
 				if_percpuq_enqueue(ifp->if_percpuq, m);
 			} else
@@ -1322,7 +1320,7 @@ cas_rint(struct cas_softc *sc)
 
 			/* XXX We should not be copying the packet here. */
 			cp = rxs->rxs_kva + off + ETHER_ALIGN;
-			m = m_devget(cp, len, 0, ifp, NULL);
+			m = m_devget(cp, len, 0, ifp);
 
 			if (word[0] & CAS_RC0_RELEASE_DATA)
 				cas_add_rxbuf(sc, idx);
@@ -1332,9 +1330,6 @@ cas_rint(struct cas_softc *sc)
 				 * Pass this up to any BPF listeners, but only
 				 * pass it up the stack if its for us.
 				 */
-				bpf_mtap(ifp, m);
-
-				ifp->if_ipackets++;
 				m->m_pkthdr.csum_flags = 0;
 				if_percpuq_enqueue(ifp->if_percpuq, m);
 			} else
@@ -1824,8 +1819,8 @@ cas_estintr(struct cas_softc *sc, int what)
 	/* PCI interrupts */
 	if (what & CAS_INTR_PCI) {
 		intrstr = pci_intr_string(sc->sc_pc, sc->sc_handle, intrbuf, sizeof(intrbuf));
-		sc->sc_ih = pci_intr_establish(sc->sc_pc, sc->sc_handle,
-		    IPL_NET, cas_intr, sc);
+		sc->sc_ih = pci_intr_establish_xname(sc->sc_pc, sc->sc_handle,
+		    IPL_NET, cas_intr, sc, device_xname(sc->sc_dev));
 		if (sc->sc_ih == NULL) {
 			aprint_error_dev(sc->sc_dev,
 			    "unable to establish interrupt");
@@ -2016,7 +2011,7 @@ cas_tint(struct cas_softc *sc, u_int32_t status)
 	if (sc->sc_tx_cnt == 0)
 		ifp->if_timer = 0;
 
-	cas_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	return (1);
 }
@@ -2041,7 +2036,7 @@ cas_start(struct ifnet *ifp)
 		 * If BPF is listening on this interface, let it see the
 		 * packet before we commit it to the wire.
 		 */
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		/*
 		 * Encapsulate this packet and start it going...

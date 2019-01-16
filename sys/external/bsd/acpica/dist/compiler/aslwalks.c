@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -87,7 +87,7 @@ AnMethodTypingWalkEnd (
     {
     case PARSEOP_METHOD:
 
-        Op->Asl.CompileFlags |= NODE_METHOD_TYPED;
+        Op->Asl.CompileFlags |= OP_METHOD_TYPED;
         break;
 
     case PARSEOP_RETURN:
@@ -317,7 +317,7 @@ AnOperandTypecheckWalkEnd (
 
     case AML_BUFFER_OP:
     case AML_PACKAGE_OP:
-    case AML_VAR_PACKAGE_OP:
+    case AML_VARIABLE_PACKAGE_OP:
 
             /* If length is a constant, we are done */
 
@@ -508,14 +508,14 @@ AnOperandTypecheckWalkEnd (
             {
                 /* No match -- this is a type mismatch error */
 
-                AnFormatBtype (StringBuffer, ThisNodeBtype);
-                AnFormatBtype (StringBuffer2, RequiredBtypes);
+                AnFormatBtype (AslGbl_StringBuffer, ThisNodeBtype);
+                AnFormatBtype (AslGbl_StringBuffer2, RequiredBtypes);
 
-                snprintf (MsgBuffer, sizeof(MsgBuffer), "[%s] found, %s operator requires [%s]",
-                    StringBuffer, OpInfo->Name, StringBuffer2);
+                snprintf (AslGbl_MsgBuffer, sizeof(AslGbl_MsgBuffer), "[%s] found, %s operator requires [%s]",
+                    AslGbl_StringBuffer, OpInfo->Name, AslGbl_StringBuffer2);
 
                 AslError (ASL_ERROR, ASL_MSG_INVALID_TYPE,
-                    ArgOp, MsgBuffer);
+                    ArgOp, AslGbl_MsgBuffer);
             }
 
         NextArgument:
@@ -634,7 +634,7 @@ AnOtherSemanticAnalysisWalkBegin (
     {
     case PARSEOP_STORE:
 
-        if (Gbl_DoTypechecking)
+        if (AslGbl_DoTypechecking)
         {
             AnAnalyzeStoreOperator (Op);
         }
@@ -827,7 +827,7 @@ AnAnalyzeStoreOperator (
     case PARSEOP_INDEX:
     case PARSEOP_REFOF:
 
-        if (!Gbl_EnableReferenceTypechecking)
+        if (!AslGbl_EnableReferenceTypechecking)
         {
             return;
         }
@@ -862,19 +862,8 @@ AnAnalyzeStoreOperator (
     case PARSEOP_DEREFOF:
     case PARSEOP_REFOF:
     case PARSEOP_INDEX:
+    case PARSEOP_STORE:
 
-        return;
-
-    case PARSEOP_METHODCALL:
-        /*
-         * A target is not allowed to be a method call.
-         * It is not supported by the ACPICA interpreter, nor is it
-         * supported by the MS ASL compiler or the MS interpreter.
-         * Although legal syntax up until ACPI 6.1, support for this
-         * will be removed for ACPI 6.2 (02/2016)
-         */
-        AslError (ASL_ERROR, ASL_MSG_SYNTAX,
-            TargetOperandOp, "Illegal method invocation as a target operand");
         return;
 
     default:

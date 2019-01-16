@@ -1,4 +1,4 @@
-/* $NetBSD: if_vge.c,v 1.58 2016/06/10 13:27:14 ozaki-r Exp $ */
+/* $NetBSD: if_vge.c,v 1.66 2018/12/09 11:14:02 jdolecek Exp $ */
 
 /*-
  * Copyright (c) 2004
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_vge.c,v 1.58 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_vge.c,v 1.66 2018/12/09 11:14:02 jdolecek Exp $");
 
 /*
  * VIA Networking Technologies VT612x PCI gigabit ethernet NIC driver.
@@ -355,64 +355,6 @@ vge_set_rxaddr(struct vge_rxdesc *rxd, bus_addr_t daddr)
 		rxd->rd_addrhi = htole16(((uint64_t)daddr >> 32) & 0xFFFF);
 	else
 		rxd->rd_addrhi = 0;
-}
-
-/*
- * Defragment mbuf chain contents to be as linear as possible.
- * Returns new mbuf chain on success, NULL on failure. Old mbuf
- * chain is always freed.
- * XXX temporary until there would be generic function doing this.
- */
-#define m_defrag	vge_m_defrag
-struct mbuf * vge_m_defrag(struct mbuf *, int);
-
-struct mbuf *
-vge_m_defrag(struct mbuf *mold, int flags)
-{
-	struct mbuf *m0, *mn, *n;
-	size_t sz = mold->m_pkthdr.len;
-
-#ifdef DIAGNOSTIC
-	if ((mold->m_flags & M_PKTHDR) == 0)
-		panic("m_defrag: not a mbuf chain header");
-#endif
-
-	MGETHDR(m0, flags, MT_DATA);
-	if (m0 == NULL)
-		return NULL;
-	m0->m_pkthdr.len = mold->m_pkthdr.len;
-	mn = m0;
-
-	do {
-		if (sz > MHLEN) {
-			MCLGET(mn, M_DONTWAIT);
-			if ((mn->m_flags & M_EXT) == 0) {
-				m_freem(m0);
-				return NULL;
-			}
-		}
-
-		mn->m_len = MIN(sz, MCLBYTES);
-
-		m_copydata(mold, mold->m_pkthdr.len - sz, mn->m_len,
-		     mtod(mn, void *));
-
-		sz -= mn->m_len;
-
-		if (sz > 0) {
-			/* need more mbufs */
-			MGET(n, M_NOWAIT, MT_DATA);
-			if (n == NULL) {
-				m_freem(m0);
-				return NULL;
-			}
-
-			mn->m_next = n;
-			mn = n;
-		}
-	} while (sz > 0);
-
-	return m0;
 }
 
 /*
@@ -969,7 +911,8 @@ vge_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_intrhand = pci_intr_establish(pc, ih, IPL_NET, vge_intr, sc);
+	sc->sc_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, vge_intr,
+	    sc, device_xname(self));
 	if (sc->sc_intrhand == NULL) {
 		aprint_error_dev(self, "unable to establish interrupt");
 		if (intrstr != NULL)
@@ -996,7 +939,7 @@ vge_attach(device_t parent, device_t self, void *aux)
 	eaddr[4] = val & 0xff;
 	eaddr[5] = val >> 8;
 
-	aprint_normal_dev(self, "Ethernet address: %s\n",
+	aprint_normal_dev(self, "Ethernet address %s\n",
 	    ether_sprintf(eaddr));
 
 	/*
@@ -1041,7 +984,7 @@ vge_attach(device_t parent, device_t self, void *aux)
 #endif
 #endif
 	ifp->if_watchdog = vge_watchdog;
-	IFQ_SET_MAXLEN(&ifp->if_snd, max(VGE_IFQ_MAXLEN, IFQ_MAXLEN));
+	IFQ_SET_MAXLEN(&ifp->if_snd, uimax(VGE_IFQ_MAXLEN, IFQ_MAXLEN));
 	IFQ_SET_READY(&ifp->if_snd);
 
 	/*
@@ -1067,6 +1010,7 @@ vge_attach(device_t parent, device_t self, void *aux)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, eaddr);
 	ether_set_ifflags_cb(&sc->sc_ethercom, vge_ifflags_cb);
 
@@ -1326,7 +1270,6 @@ vge_rxeof(struct vge_softc *sc)
 #ifndef __NO_STRICT_ALIGNMENT
 		vge_fixup_rx(m);
 #endif
-		ifp->if_ipackets++;
 		m_set_rcvif(m, ifp);
 
 		/* Do RX checksumming if enabled */
@@ -1364,14 +1307,8 @@ vge_rxeof(struct vge_softc *sc)
 			 * On BE machines, tag is stored in BE as stream data
 			 *  but it was already swapped by le32toh() above.
 			 */
-			VLAN_INPUT_TAG(ifp, m,
-			    bswap16(rxctl & VGE_RDCTL_VLANID), continue);
+			vlan_set_tag(m, bswap16(rxctl & VGE_RDCTL_VLANID));
 		}
-
-		/*
-		 * Handle BPF listeners.
-		 */
-		bpf_mtap(ifp, m);
 
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 
@@ -1529,8 +1466,8 @@ vge_intr(void *arg)
 	/* Re-enable interrupts */
 	CSR_WRITE_1(sc, VGE_CRS3, VGE_CR3_INT_GMSK);
 
-	if (claim && !IFQ_IS_EMPTY(&ifp->if_snd))
-		vge_start(ifp);
+	if (claim)
+		if_schedule_deferred_start(ifp);
 
 	return claim;
 }
@@ -1544,7 +1481,6 @@ vge_encap(struct vge_softc *sc, struct mbuf *m_head, int idx)
 	struct mbuf *m_new;
 	bus_dmamap_t map;
 	int m_csumflags, seg, error, flags;
-	struct m_tag *mtag;
 	size_t sz;
 	uint32_t td_sts, td_ctl;
 
@@ -1635,14 +1571,13 @@ vge_encap(struct vge_softc *sc, struct mbuf *m_head, int idx)
 	/*
 	 * Set up hardware VLAN tagging.
 	 */
-	mtag = VLAN_OUTPUT_TAG(&sc->sc_ethercom, m_head);
-	if (mtag != NULL) {
+	if (vlan_has_tag(m_head)) {
 		/*
 		 * No need htons() here since vge(4) chip assumes
 		 * that tags are written in little endian and
 		 * we already use htole32() here.
 		 */
-		td_ctl |= VLAN_TAG_VALUE(mtag) | VGE_TDCTL_VTAG;
+		td_ctl |= vlan_get_tag(m_head) | VGE_TDCTL_VTAG;
 	}
 	txd->td_ctl = htole32(td_ctl);
 	txd->td_sts = htole32(td_sts);
@@ -1743,7 +1678,7 @@ vge_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 	}
 
 	if (sc->sc_tx_free < ofree) {

@@ -1,4 +1,4 @@
-/*	$NetBSD: wsdisplay_vcons.c,v 1.35 2015/11/08 16:49:20 christos Exp $ */
+/*	$NetBSD: wsdisplay_vcons.c,v 1.39 2018/12/01 00:28:45 msaitoh Exp $ */
 
 /*-
  * Copyright (c) 2005, 2006 Michael Lorenz
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: wsdisplay_vcons.c,v 1.35 2015/11/08 16:49:20 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: wsdisplay_vcons.c,v 1.39 2018/12/01 00:28:45 msaitoh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -57,6 +57,12 @@ __KERNEL_RCSID(0, "$NetBSD: wsdisplay_vcons.c,v 1.35 2015/11/08 16:49:20 christo
 #include "opt_vcons.h"
 #endif
 
+#ifdef VCONS_DEBUG
+#define DPRINTF printf
+#else
+#define DPRINTF if (0) printf
+#endif
+
 static void vcons_dummy_init_screen(void *, struct vcons_screen *, int, 
 	    long *);
 
@@ -66,6 +72,7 @@ static int  vcons_alloc_screen(void *, const struct wsscreen_descr *, void **,
 static void vcons_free_screen(void *, void *);
 static int  vcons_show_screen(void *, void *, int, void (*)(void *, int, int),
 	    void *);
+static int  vcons_load_font(void *, void *, struct wsdisplay_font *);
 
 #ifdef WSDISPLAY_SCROLLSUPPORT
 static void vcons_scroll(void *, void *, int);
@@ -114,7 +121,7 @@ static void vcons_unlock(struct vcons_screen *);
 #ifdef VCONS_DRAW_INTR
 static void vcons_intr(void *);
 static void vcons_softintr(void *);
-static void vcons_intr_enable(device_t);
+static void vcons_init_thread(void *);
 #endif
 
 int
@@ -139,6 +146,7 @@ vcons_init(struct vcons_data *vd, void *cookie, struct wsscreen_descr *def,
 	ao->alloc_screen = vcons_alloc_screen;
 	ao->free_screen = vcons_free_screen;
 	ao->show_screen = vcons_show_screen;
+	ao->load_font = vcons_load_font;
 #ifdef WSDISPLAY_SCROLLSUPPORT
 	ao->scroll = vcons_scroll;
 #endif
@@ -147,6 +155,7 @@ vcons_init(struct vcons_data *vd, void *cookie, struct wsscreen_descr *def,
 	vd->active = NULL;
 	vd->wanted = NULL;
 	vd->currenttype = def;
+	vd->defaulttype = def;
 	callout_init(&vd->switch_callout, 0);
 	callout_setfunc(&vd->switch_callout, vcons_do_switch, vd);
 #ifdef VCONS_DRAW_INTR
@@ -171,8 +180,11 @@ vcons_init(struct vcons_data *vd, void *cookie, struct wsscreen_descr *def,
 	callout_setfunc(&vd->intr, vcons_intr, vd);
 	vd->intr_valid = 1;
 
-	/* XXX assume that the 'dev' arg is never dereferenced */
-	config_interrupts((device_t)vd, vcons_intr_enable);
+	if (kthread_create(PRI_NONE, 0, NULL, vcons_init_thread, vd, NULL,
+	    "vcons_init") != 0) {
+		printf("%s: unable to create thread.\n", __func__);
+		return -1;
+	}
 #endif
 	return 0;
 }
@@ -220,9 +232,8 @@ vcons_dummy_init_screen(void *cookie,
 	       "supposed to supply a replacement for proper operation\n");
 }
 
-int
-vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
-    int existing, long *defattr)
+static int
+vcons_alloc_buffers(struct vcons_data *vd, struct vcons_screen *scr)
 {
 	struct rasops_info *ri = &scr->scr_ri;
 	int cnt, i;
@@ -230,9 +241,69 @@ vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
 	int size;
 #endif
 
+	/* 
+	 * we allocate both chars and attributes in one chunk, attributes first 
+	 * because they have the (potentially) bigger alignment 
+	 */
+#ifdef WSDISPLAY_SCROLLSUPPORT
+	cnt = (ri->ri_rows + WSDISPLAY_SCROLLBACK_LINES) * ri->ri_cols;
+	scr->scr_lines_in_buffer = WSDISPLAY_SCROLLBACK_LINES;
+	scr->scr_current_line = 0;
+	scr->scr_line_wanted = 0;
+	scr->scr_offset_to_zero = ri->ri_cols * WSDISPLAY_SCROLLBACK_LINES;
+	scr->scr_current_offset = scr->scr_offset_to_zero;
+#else
+	cnt = ri->ri_rows * ri->ri_cols;
+#endif
+	scr->scr_attrs = malloc(cnt * (sizeof(long) + 
+	    sizeof(uint32_t)), M_DEVBUF, M_WAITOK);
+	if (scr->scr_attrs == NULL)
+		return ENOMEM;
+
+	scr->scr_chars = (uint32_t *)&scr->scr_attrs[cnt];
+
+	/* 
+	 * fill the attribute buffer with *defattr, chars with 0x20 
+	 * since we don't know if the driver tries to mimic firmware output or
+	 * reset everything we do nothing to VRAM here, any driver that feels
+	 * the need to clear screen or something will have to do it on its own
+	 * Additional screens will start out in the background anyway so
+	 * cleaning or not only really affects the initial console screen
+	 */
+	for (i = 0; i < cnt; i++) {
+		scr->scr_attrs[i] = scr->scr_defattr;
+		scr->scr_chars[i] = 0x20;
+	}
+
+#ifdef VCONS_DRAW_INTR
+	size = ri->ri_cols * ri->ri_rows;
+	if (size > vd->cells) {
+		if (vd->chars != NULL) free(vd->chars, M_DEVBUF);
+		if (vd->attrs != NULL) free(vd->attrs, M_DEVBUF);
+		vd->cells = size;
+		vd->chars = malloc(size * sizeof(uint32_t), M_DEVBUF,
+		    M_WAITOK|M_ZERO);
+		vd->attrs = malloc(size * sizeof(long), M_DEVBUF,
+		    M_WAITOK|M_ZERO);
+		vcons_invalidate_cache(vd);
+	} else if (SCREEN_IS_VISIBLE(scr))
+		vcons_invalidate_cache(vd);
+#endif
+	return 0;
+}
+
+int
+vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
+    int existing, long *defattr)
+{
+	struct rasops_info *ri = &scr->scr_ri;
+	int i;
+
 	scr->scr_cookie = vd->cookie;
 	scr->scr_vd = scr->scr_origvd = vd;
 	scr->scr_busy = 0;
+	if (scr->scr_type == NULL)
+		scr->scr_type = vd->defaulttype;
 	
 	/*
 	 * call the driver-supplied init_screen function which is expected
@@ -246,7 +317,7 @@ vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
 	 */
 	vd->eraserows = ri->ri_ops.eraserows;
 	vd->erasecols = ri->ri_ops.erasecols;
-	vd->putchar   = ri->ri_ops.putchar;
+	scr->putchar   = ri->ri_ops.putchar;
 	vd->cursor    = ri->ri_ops.cursor;
 
 	if (scr->scr_flags & VCONS_NO_COPYCOLS) {
@@ -271,27 +342,6 @@ vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
 
 	ri->ri_hw = scr;
 
-	/* 
-	 * we allocate both chars and attributes in one chunk, attributes first 
-	 * because they have the (potentially) bigger alignment 
-	 */
-#ifdef WSDISPLAY_SCROLLSUPPORT
-	cnt = (ri->ri_rows + WSDISPLAY_SCROLLBACK_LINES) * ri->ri_cols;
-	scr->scr_lines_in_buffer = WSDISPLAY_SCROLLBACK_LINES;
-	scr->scr_current_line = 0;
-	scr->scr_line_wanted = 0;
-	scr->scr_offset_to_zero = ri->ri_cols * WSDISPLAY_SCROLLBACK_LINES;
-	scr->scr_current_offset = scr->scr_offset_to_zero;
-#else
-	cnt = ri->ri_rows * ri->ri_cols;
-#endif
-	scr->scr_attrs = malloc(cnt * (sizeof(long) + 
-	    sizeof(uint32_t)), M_DEVBUF, M_WAITOK);
-	if (scr->scr_attrs == NULL)
-		return ENOMEM;
-
-	scr->scr_chars = (uint32_t *)&scr->scr_attrs[cnt];
-
 	i = ri->ri_ops.allocattr(ri, WS_DEFAULT_FG, WS_DEFAULT_BG, 0, defattr);
 	if (i != 0) {
 #ifdef DIAGNOSTIC
@@ -301,32 +351,7 @@ vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
 	} else
 		scr->scr_defattr = *defattr;
 
-	/* 
-	 * fill the attribute buffer with *defattr, chars with 0x20 
-	 * since we don't know if the driver tries to mimic firmware output or
-	 * reset everything we do nothing to VRAM here, any driver that feels
-	 * the need to clear screen or something will have to do it on its own
-	 * Additional screens will start out in the background anyway so
-	 * cleaning or not only really affects the initial console screen
-	 */
-	for (i = 0; i < cnt; i++) {
-		scr->scr_attrs[i] = *defattr;
-		scr->scr_chars[i] = 0x20;
-	}
-
-#ifdef VCONS_DRAW_INTR
-	size = ri->ri_cols * ri->ri_rows;
-	if (size > vd->cells) {
-		if (vd->chars != NULL) free(vd->chars, M_DEVBUF);
-		if (vd->attrs != NULL) free(vd->attrs, M_DEVBUF);
-		vd->cells = size;
-		vd->chars = malloc(size * sizeof(uint32_t), M_DEVBUF,
-		    M_WAITOK|M_ZERO);
-		vd->attrs = malloc(size * sizeof(long), M_DEVBUF,
-		    M_WAITOK|M_ZERO);
-		vcons_invalidate_cache(vd);
-	}
-#endif
+	vcons_alloc_buffers(vd, scr);
 
 	if(vd->active == NULL) {
 		vd->active = scr;
@@ -343,6 +368,98 @@ vcons_init_screen(struct vcons_data *vd, struct vcons_screen *scr,
 	LIST_INSERT_HEAD(&vd->screens, scr, next);
 	return 0;
 }
+
+static int
+vcons_load_font(void *v, void *cookie, struct wsdisplay_font *f)
+{
+	struct vcons_data *vd = v;
+	struct vcons_screen *scr = cookie;
+	struct rasops_info *ri;
+	struct wsdisplay_font *font;
+	int flags = WSFONT_FIND_BITMAP, fcookie;
+
+	/* see if we're asked to add a font or use it */
+	if (scr == NULL)
+		return 0;
+
+	ri = &scr->scr_ri;
+
+	/* see if the driver knows how to handle multiple fonts */
+	if ((scr->scr_flags & VCONS_LOADFONT) == 0) {
+		return EOPNOTSUPP;
+	}
+
+	/* now see what fonts we can use */
+	if (ri->ri_flg & RI_ENABLE_ALPHA) {
+		flags |= WSFONT_FIND_ALPHA;
+	}
+
+	fcookie = wsfont_find(f->name, 0, 0, 0, 0, 0, flags);
+	if (fcookie == -1)
+		return EINVAL;
+
+	wsfont_lock(fcookie, &font);
+	if (font == NULL)
+		return EINVAL;
+
+	/* ok, we got a font. Now clear the screen with the old parameters */
+	if (SCREEN_IS_VISIBLE(scr))
+		vd->eraserows(ri, 0, ri->ri_rows, scr->scr_defattr);
+
+	vcons_lock(vd->active);
+#ifdef VCONS_DRAW_INTR
+	callout_halt(&vd->intr, NULL);
+#endif
+	/* set the new font and re-initialize things */
+	ri->ri_font = font;
+	wsfont_unlock(ri->ri_wsfcookie);
+	ri->ri_wsfcookie = fcookie;
+
+	vd->init_screen(vd->cookie, scr, 1, &scr->scr_defattr);
+	DPRINTF("caps %x %x\n", scr->scr_type->capabilities, ri->ri_caps);
+	if (scr->scr_type->capabilities & WSSCREEN_RESIZE) {
+		scr->scr_type->nrows = ri->ri_rows;
+		scr->scr_type->ncols = ri->ri_cols;
+		DPRINTF("new size %d %d\n", ri->ri_rows, ri->ri_cols);
+	}
+
+
+	/* now, throw the old buffers away */
+	if (scr->scr_attrs)
+		free(scr->scr_attrs, M_DEVBUF);
+	/* allocate new buffers */
+	vcons_alloc_buffers(vd, scr);
+	
+	/* save the potentially changed putchar */ 
+	scr->putchar   = ri->ri_ops.putchar;
+
+	/* and put our wrappers back */
+	ri->ri_ops.eraserows = vcons_eraserows;	
+	ri->ri_ops.erasecols = vcons_erasecols;	
+	ri->ri_ops.putchar   = vcons_putchar;
+	ri->ri_ops.cursor    = vcons_cursor;
+	ri->ri_ops.copycols  = vcons_copycols;
+	ri->ri_ops.copyrows  = vcons_copyrows;
+	vcons_unlock(vd->active);
+
+	/* notify things that we're about to redraw */
+	if (vd->show_screen_cb != NULL)
+		vd->show_screen_cb(scr, vd->show_screen_cookie);
+	
+#ifdef VCONS_DRAW_INTR
+	/*
+	 * XXX
+	 * Something(tm) craps all over VRAM somewhere up there if we're 
+	 * using VCONS_DRAW_INTR. Until I figure out what causes it, just
+	 * redraw the screen for now.
+	 */
+	vcons_redraw_screen(vd->active);
+	callout_schedule(&vd->intr, mstohz(33));
+#endif
+	/* no need to draw anything, wsdisplay should reset the terminal */
+
+	return 0;
+}	
 
 static void
 vcons_do_switch(void *arg)
@@ -401,8 +518,12 @@ vcons_do_switch(void *arg)
 	vd->active = scr;
 	vd->wanted = NULL;
 
+#ifdef VCONS_DRAW_INTR
+	vcons_invalidate_cache(vd);
+#endif
+
 	if (vd->show_screen_cb != NULL)
-		vd->show_screen_cb(scr);
+		vd->show_screen_cb(scr, vd->show_screen_cookie);
 
 	if ((scr->scr_flags & VCONS_NO_REDRAW) == 0)
 		vcons_redraw_screen(scr);
@@ -421,7 +542,7 @@ vcons_redraw_screen(struct vcons_screen *scr)
 	int i, j, offset, boffset = 0, start = -1;
 
 	mask = 0x00ff00ff;	/* background and flags */
-	cmp = -1;		/* never match anything */
+	cmp = 0xffffffff;	/* never match anything */
 	vcons_lock(scr);
 	if (SCREEN_IS_VISIBLE(scr) && SCREEN_CAN_DRAW(scr)) {
 
@@ -474,11 +595,12 @@ vcons_redraw_screen(struct vcons_screen *scr)
 					} else if (acmp != last_a) {
 						/*
 						 * different attr, need to
-						 * flush 
+						 * flush & restart 
 						 */
 						vd->erasecols(ri, i, start,
 						    j - start, last_a);
-						start = -1;
+						start = j;
+						last_a = acmp;
 					}
 				} else {
 					if (start != -1) {
@@ -487,7 +609,7 @@ vcons_redraw_screen(struct vcons_screen *scr)
 						start = -1;
 					}
 							
-					vd->putchar(ri, i, j, c, a);
+					scr->putchar(ri, i, j, c, a);
 				}
 next:
 #ifdef VCONS_DRAW_INTR
@@ -549,7 +671,7 @@ vcons_update_screen(struct vcons_screen *scr)
 				 */
 				if ((vd->chars[boffset] != charptr[offset]) ||
 				    (vd->attrs[boffset] != attrptr[offset])) {
-					vd->putchar(ri, i, j, 
+					scr->putchar(ri, i, j, 
 				 	   charptr[offset], attrptr[offset]);
 					vd->chars[boffset] = charptr[offset];
 					vd->attrs[boffset] = attrptr[offset];
@@ -615,6 +737,7 @@ vcons_alloc_screen(void *v, const struct wsscreen_descr *type, void **cookiep,
 {
 	struct vcons_data *vd = v;
 	struct vcons_screen *scr;
+	struct wsscreen_descr *t = __UNCONST(type);
 	int ret;
 
 	scr = malloc(sizeof(struct vcons_screen), M_DEVBUF, M_WAITOK | M_ZERO);
@@ -624,12 +747,16 @@ vcons_alloc_screen(void *v, const struct wsscreen_descr *type, void **cookiep,
 	scr->scr_flags = 0;		
 	scr->scr_status = 0;
 	scr->scr_busy = 0;
-	scr->scr_type = type;
+	scr->scr_type = __UNCONST(type);
 
 	ret = vcons_init_screen(vd, scr, 0, defattrp);
 	if (ret != 0) {
 		free(scr, M_DEVBUF);
 		return ret;
+	}
+	if (t->capabilities & WSSCREEN_RESIZE) {
+		t->nrows = scr->scr_ri.ri_rows;
+		t->ncols = scr->scr_ri.ri_cols;
 	}
 
 	if (vd->active == NULL) {
@@ -756,7 +883,9 @@ vcons_copycols_noread(void *cookie, int row, int srccol, int dstcol, int ncols)
 {
 	struct rasops_info *ri = cookie;
 	struct vcons_screen *scr = ri->ri_hw;
+#ifdef VCONS_DRAW_INTR
 	struct vcons_data *vd = scr->scr_vd;
+#endif
 
 	vcons_lock(scr);
 	if (SCREEN_IS_VISIBLE(scr) && SCREEN_CAN_DRAW(scr)) {
@@ -773,13 +902,13 @@ vcons_copycols_noread(void *cookie, int row, int srccol, int dstcol, int ncols)
 #ifdef VCONS_DRAW_INTR
 			if ((scr->scr_chars[pos] != vd->chars[ppos]) ||
 			    (scr->scr_attrs[pos] != vd->attrs[ppos])) {
-				vd->putchar(cookie, row, c, 
+				scr->putchar(cookie, row, c, 
 				   scr->scr_chars[pos], scr->scr_attrs[pos]);
 				vd->chars[ppos] = scr->scr_chars[pos];
 				vd->attrs[ppos] = scr->scr_attrs[pos];
 			}
 #else
-			vd->putchar(cookie, row, c, scr->scr_chars[pos],
+			scr->putchar(cookie, row, c, scr->scr_chars[pos],
 			    scr->scr_attrs[pos]);
 #endif
 			pos++;
@@ -928,8 +1057,9 @@ vcons_copyrows_noread(void *cookie, int srcrow, int dstrow, int nrows)
 {
 	struct rasops_info *ri = cookie;
 	struct vcons_screen *scr = ri->ri_hw;
+#ifdef VCONS_DRAW_INTR
 	struct vcons_data *vd = scr->scr_vd;
-
+#endif
 	vcons_lock(scr);
 	if (SCREEN_IS_VISIBLE(scr) && SCREEN_CAN_DRAW(scr)) {
 		int pos, l, c, offset, ppos;
@@ -946,13 +1076,13 @@ vcons_copyrows_noread(void *cookie, int srcrow, int dstrow, int nrows)
 #ifdef VCONS_DRAW_INTR
 				if ((scr->scr_chars[pos] != vd->chars[ppos]) ||
 				    (scr->scr_attrs[pos] != vd->attrs[ppos])) {
-					vd->putchar(cookie, l, c, 
+					scr->putchar(cookie, l, c, 
 					   scr->scr_chars[pos], scr->scr_attrs[pos]);
 					vd->chars[ppos] = scr->scr_chars[pos];
 					vd->attrs[ppos] = scr->scr_attrs[pos];
 				}
 #else
-				vd->putchar(cookie, l, c, scr->scr_chars[pos],
+				scr->putchar(cookie, l, c, scr->scr_chars[pos],
 				    scr->scr_attrs[pos]);
 #endif
 				pos++;
@@ -1073,13 +1203,13 @@ vcons_putchar_cached(void *cookie, int row, int col, u_int c, long attr)
 	int pos = row * ri->ri_cols + col;
 
 	if ((vd->chars == NULL) || (vd->attrs == NULL)) {
-		vd->putchar(cookie, row, col, c, attr);
+		scr->putchar(cookie, row, col, c, attr);
 		return;
 	}
 	if ((vd->chars[pos] != c) || (vd->attrs[pos] != attr)) {
 		vd->attrs[pos] = attr;
 		vd->chars[pos] = c;
-		vd->putchar(cookie, row, col, c, attr);
+		scr->putchar(cookie, row, col, c, attr);
 	}
 }
 #endif
@@ -1102,7 +1232,7 @@ vcons_putchar(void *cookie, int row, int col, u_int c, long attr)
 #ifdef VCONS_DRAW_INTR
 		vcons_putchar_cached(cookie, row, col, c, attr);
 #else
-		scr->scr_vd->putchar(cookie, row, col, c, attr);
+		scr->putchar(cookie, row, col, c, attr);
 #endif
 	}
 	vcons_unlock(scr);
@@ -1276,7 +1406,7 @@ vcons_do_scroll(struct vcons_screen *scr)
 			    scr->scr_chars[r_offset],
 			    scr->scr_attrs[r_offset]);
 #else
-			scr->scr_vd->putchar(scr, i + r_start, j,
+			scr->putchar(scr, i + r_start, j,
 			    scr->scr_chars[r_offset],
 			    scr->scr_attrs[r_offset]);
 #endif
@@ -1329,12 +1459,13 @@ vcons_softintr(void *cookie)
 }
 
 static void
-vcons_intr_enable(device_t dev)
+vcons_init_thread(void *cookie)
 {
-	/* the 'dev' arg we pass to config_interrupts isn't a device_t */
-	struct vcons_data *vd = (struct vcons_data *)dev;
+	struct vcons_data *vd = (struct vcons_data *)cookie;
+
 	vd->use_intr = 2;
 	callout_schedule(&vd->intr, mstohz(33));
+	kthread_exit(0);
 }
 #endif /* VCONS_DRAW_INTR */
 
@@ -1383,7 +1514,7 @@ vcons_hard_switch(struct vcons_screen *scr)
 	vd->wanted = NULL;
 
 	if (vd->show_screen_cb != NULL)
-		vd->show_screen_cb(scr);
+		vd->show_screen_cb(scr, vd->show_screen_cookie);
 }
 
 #ifdef VCONS_DRAW_INTR

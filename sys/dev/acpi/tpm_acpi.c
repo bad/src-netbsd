@@ -1,4 +1,4 @@
-/* $NetBSD: tpm_acpi.c,v 1.4 2014/03/01 16:59:41 maxv Exp $ */
+/* $NetBSD: tpm_acpi.c,v 1.7 2018/12/09 11:12:58 jdolecek Exp $ */
 
 /*-
  * Copyright (c) 2012 The NetBSD Foundation, Inc.
@@ -52,7 +52,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tpm_acpi.c,v 1.4 2014/03/01 16:59:41 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tpm_acpi.c,v 1.7 2018/12/09 11:12:58 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -69,6 +69,8 @@ __KERNEL_RCSID(0, "$NetBSD: tpm_acpi.c,v 1.4 2014/03/01 16:59:41 maxv Exp $");
 
 #include <dev/isa/isavar.h>
 
+#include "ioconf.h"
+
 #define _COMPONENT          ACPI_RESOURCE_COMPONENT
 ACPI_MODULE_NAME            ("tpm_acpi")
 
@@ -83,13 +85,13 @@ CFATTACH_DECL_NEW(tpm_acpi, sizeof(struct tpm_softc), tpm_acpi_match,
  * Supported device IDs
  */
 
+#ifdef notyet
 static const char * const tpm_acpi_ids[] = {
 	"IFX0101",
 	"IFX0102",
 	NULL
 };
-
-extern struct cfdriver tpm_cd;
+#endif
 
 static int
 tpm_acpi_match(device_t parent, cfdata_t match, void *aux)
@@ -154,8 +156,8 @@ tpm_acpi_attach(device_t parent, device_t self, void *aux)
 
 		if (mem->ar_length != TPM_SIZE) {
 			aprint_error_dev(sc->sc_dev,
-			    "wrong size mem %u != %u\n",
-			    mem->ar_length, TPM_SIZE);
+			    "wrong size mem %"PRIu64" != %u\n",
+			    (uint64_t)mem->ar_length, TPM_SIZE);
 			goto out;
 		}
 

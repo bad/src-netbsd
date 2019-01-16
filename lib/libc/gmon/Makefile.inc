@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile.inc,v 1.11 2014/09/17 11:37:28 joerg Exp $
+#	$NetBSD: Makefile.inc,v 1.14 2019/01/06 18:14:10 christos Exp $
 #	@(#)Makefile.inc	8.1 (Berkeley) 6/4/93
 
 # gmon sources
@@ -18,10 +18,17 @@ MLINKS+=moncontrol.3 monstartup.3
 COPTS.mcount.c+=${${ACTIVE_CXX} == "gcc":? -Wa,--no-warn :}
 .endif
 
+.if (${MACHINE_CPU} == "i386" || ${MACHINE_CPU} == "x86_64") && \
+    ${HAVE_GCC:U0} >= 6
+# The usage of __builtin_frame_address(1) should be OK.
+COPTS.mcount.c+=${${ACTIVE_CXX} == "gcc":? -Wno-error=frame-address :}
+.endif
+
 
 # mcount and gmon cannot be compiled with profiling
-mcount.po: mcount.o
-	cp mcount.o mcount.po
+GMONOBJEXT=${${MKPIC} != "no":?pico:o}
+mcount.po: mcount.${GMONOBJEXT}
+	cp mcount.${GMONOBJEXT} mcount.po
 
-gmon.po: gmon.o
-	cp gmon.o gmon.po
+gmon.po: gmon.${GMONOBJEXT}
+	cp gmon.${GMONOBJEXT} gmon.po

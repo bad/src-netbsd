@@ -1,4 +1,4 @@
-/*	$NetBSD: cmpci.c,v 1.48 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: cmpci.c,v 1.51 2018/12/09 11:14:01 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 2000, 2001, 2008 The NetBSD Foundation, Inc.
@@ -43,7 +43,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: cmpci.c,v 1.48 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: cmpci.c,v 1.51 2018/12/09 11:14:01 jdolecek Exp $");
 
 #if defined(AUDIO_DEBUG) || defined(DEBUG)
 #define DPRINTF(x) if (cmpcidebug) printf x
@@ -420,8 +420,8 @@ cmpci_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 	strintr = pci_intr_string(pa->pa_pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(pa->pa_pc, ih, IPL_AUDIO, cmpci_intr,
-	    sc);
+	sc->sc_ih = pci_intr_establish_xname(pa->pa_pc, ih, IPL_AUDIO,
+	    cmpci_intr, sc, device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "failed to establish interrupt");
 		if (strintr != NULL)
@@ -1016,11 +1016,7 @@ cmpci_alloc_dmamem(struct cmpci_softc *sc, size_t size, void **r_addr)
 	struct cmpci_dmanode *n;
 
 	error = 0;
-	n = kmem_alloc(sizeof(struct cmpci_dmanode), KM_SLEEP);
-	if (n == NULL) {
-		error = ENOMEM;
-		goto quit;
-	}
+	n = kmem_alloc(sizeof(*n), KM_SLEEP);
 
 #define CMPCI_DMABUF_ALIGN    0x4
 #define CMPCI_DMABUF_BOUNDARY 0x0
@@ -1059,7 +1055,6 @@ cmpci_alloc_dmamem(struct cmpci_softc *sc, size_t size, void **r_addr)
 			n->cd_segs, sizeof(n->cd_segs)/sizeof(n->cd_segs[0]));
  mfree:
 	kmem_free(n, sizeof(*n));
- quit:
 	return error;
 }
 

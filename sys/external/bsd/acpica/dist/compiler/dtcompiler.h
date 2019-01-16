@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -46,7 +46,6 @@
 #ifndef _DTCOMPILER
 #define _DTCOMPILER
 
-#include <stdio.h>
 #include "acdisasm.h"
 
 
@@ -131,35 +130,35 @@ typedef struct dt_subtable
 
 /* List of all field names and values from the input source */
 
-DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*Gbl_FieldList, NULL);
+DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*AslGbl_FieldList, NULL);
 
 /* List of all compiled tables and subtables */
 
-DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*Gbl_RootTable, NULL);
+DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*AslGbl_RootTable, NULL);
 
 /* Stack for subtables */
 
-DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*Gbl_SubtableStack, NULL);
+DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*AslGbl_SubtableStack, NULL);
 
 /* List for defined labels */
 
-DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*Gbl_LabelList, NULL);
+DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*AslGbl_LabelList, NULL);
 
 /* Current offset within the binary output table */
 
-DT_EXTERN UINT32            DT_INIT_GLOBAL (Gbl_CurrentTableOffset, 0);
+DT_EXTERN UINT32            DT_INIT_GLOBAL (AslGbl_CurrentTableOffset, 0);
 
 /* Local caches */
 
-DT_EXTERN UINT32            DT_INIT_GLOBAL (Gbl_SubtableCount, 0);
-DT_EXTERN ASL_CACHE_INFO    DT_INIT_GLOBAL (*Gbl_SubtableCacheList, NULL);
-DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*Gbl_SubtableCacheNext, NULL);
-DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*Gbl_SubtableCacheLast, NULL);
+DT_EXTERN UINT32            DT_INIT_GLOBAL (AslGbl_SubtableCount, 0);
+DT_EXTERN ASL_CACHE_INFO    DT_INIT_GLOBAL (*AslGbl_SubtableCacheList, NULL);
+DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*AslGbl_SubtableCacheNext, NULL);
+DT_EXTERN DT_SUBTABLE       DT_INIT_GLOBAL (*AslGbl_SubtableCacheLast, NULL);
 
-DT_EXTERN UINT32            DT_INIT_GLOBAL (Gbl_FieldCount, 0);
-DT_EXTERN ASL_CACHE_INFO    DT_INIT_GLOBAL (*Gbl_FieldCacheList, NULL);
-DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*Gbl_FieldCacheNext, NULL);
-DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*Gbl_FieldCacheLast, NULL);
+DT_EXTERN UINT32            DT_INIT_GLOBAL (AslGbl_FieldCount, 0);
+DT_EXTERN ASL_CACHE_INFO    DT_INIT_GLOBAL (*AslGbl_FieldCacheList, NULL);
+DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*AslGbl_FieldCacheNext, NULL);
+DT_EXTERN DT_FIELD          DT_INIT_GLOBAL (*AslGbl_FieldCacheLast, NULL);
 
 
 /* dtcompiler - main module */
@@ -168,8 +167,7 @@ ACPI_STATUS
 DtCompileTable (
     DT_FIELD                **Field,
     ACPI_DMTABLE_INFO       *Info,
-    DT_SUBTABLE             **RetSubtable,
-    BOOLEAN                 Required);
+    DT_SUBTABLE             **RetSubtable);
 
 ACPI_STATUS
 DtCompileTwoSubtables (
@@ -373,10 +371,9 @@ DtFatal (
     DT_FIELD                *FieldObject,
     char                    *ExtraMessage);
 
-ACPI_STATUS
-DtStrtoul64 (
-    char                    *String,
-    UINT64                  *ReturnInteger);
+UINT64
+DtDoConstant (
+    char                    *String);
 
 char*
 DtGetFieldValue (
@@ -401,18 +398,6 @@ DtSetTableChecksum (
 
 void
 DtSetTableLength(
-    void);
-
-DT_SUBTABLE *
-UtSubtableCacheCalloc (
-    void);
-
-DT_FIELD *
-UtFieldCacheCalloc (
-    void);
-
-void
-DtDeleteCaches (
     void);
 
 
@@ -475,6 +460,10 @@ DtCompileHest (
     void                    **PFieldList);
 
 ACPI_STATUS
+DtCompileHmat (
+    void                    **PFieldList);
+
+ACPI_STATUS
 DtCompileIort (
     void                    **PFieldList);
 
@@ -511,11 +500,19 @@ DtCompileNfit (
     void                    **PFieldList);
 
 ACPI_STATUS
+DtCompilePcct (
+    void                    **PFieldList);
+
+ACPI_STATUS
+DtCompilePdtt (
+    void                    **PFieldList);
+
+ACPI_STATUS
 DtCompilePmtt (
     void                    **PFieldList);
 
 ACPI_STATUS
-DtCompilePcct (
+DtCompilePptt (
     void                    **PFieldList);
 
 ACPI_STATUS
@@ -525,6 +522,10 @@ DtCompileRsdt (
 ACPI_STATUS
 DtCompileS3pt (
     DT_FIELD                **PFieldList);
+
+ACPI_STATUS
+DtCompileSdev (
+    void                    **PFieldList);
 
 ACPI_STATUS
 DtCompileSlic (
@@ -544,6 +545,10 @@ DtCompileStao (
 
 ACPI_STATUS
 DtCompileTcpa (
+    void                    **PFieldList);
+
+ACPI_STATUS
+DtCompileTpm2 (
     void                    **PFieldList);
 
 ACPI_STATUS
@@ -595,6 +600,7 @@ extern const unsigned char  TemplateFadt[];
 extern const unsigned char  TemplateFpdt[];
 extern const unsigned char  TemplateGtdt[];
 extern const unsigned char  TemplateHest[];
+extern const unsigned char  TemplateHmat[];
 extern const unsigned char  TemplateHpet[];
 extern const unsigned char  TemplateIort[];
 extern const unsigned char  TemplateIvrs[];
@@ -608,10 +614,15 @@ extern const unsigned char  TemplateMsdm[];
 extern const unsigned char  TemplateMtmr[];
 extern const unsigned char  TemplateNfit[];
 extern const unsigned char  TemplatePcct[];
+extern const unsigned char  TemplatePdtt[];
 extern const unsigned char  TemplatePmtt[];
+extern const unsigned char  TemplatePptt[];
+extern const unsigned char  TemplateRasf[];
 extern const unsigned char  TemplateRsdt[];
 extern const unsigned char  TemplateS3pt[];
 extern const unsigned char  TemplateSbst[];
+extern const unsigned char  TemplateSdei[];
+extern const unsigned char  TemplateSdev[];
 extern const unsigned char  TemplateSlic[];
 extern const unsigned char  TemplateSlit[];
 extern const unsigned char  TemplateSpcr[];
@@ -627,6 +638,7 @@ extern const unsigned char  TemplateWdat[];
 extern const unsigned char  TemplateWddt[];
 extern const unsigned char  TemplateWdrt[];
 extern const unsigned char  TemplateWpbt[];
+extern const unsigned char  TemplateWsmt[];
 extern const unsigned char  TemplateXenv[];
 extern const unsigned char  TemplateXsdt[];
 

@@ -1,4 +1,4 @@
-/*	$NetBSD: if_urndisreg.h,v 1.2 2016/04/23 10:15:31 skrll Exp $ */
+/*	$NetBSD: if_urndisreg.h,v 1.4 2018/11/09 21:57:09 maya Exp $ */
 /*	$OpenBSD: if_urndisreg.h,v 1.14 2010/07/08 18:22:01 ckuethe Exp $ */
 
 /*
@@ -47,8 +47,10 @@ struct urndis_softc {
 	struct ethercom			sc_ec;
 
 	/* RNDIS device info */
-	uint32_t			sc_lim_pktsz;
 	uint32_t			sc_filter;
+	uint32_t			sc_maxppt;
+	uint32_t			sc_maxtsz;
+	uint32_t			sc_palign;
 
 	/* USB goo */
 	struct usbd_device *		sc_udev;
@@ -121,6 +123,9 @@ struct urndis_softc {
 #define	OID_802_3_XMIT_LATE_COLLISIONS	0x01020207
 
 #define RNDIS_MEDIUM_802_3		0x00000000
+
+#define RNDIS_MAJOR_VERSION		0x00000001U
+#define RNDIS_MINOR_VERSION		0x00000000U
 
 /* Device flags */
 #define RNDIS_DF_CONNECTIONLESS		0x00000001
@@ -303,5 +308,5 @@ struct urndis_keepalive_comp {
 /* Rndis offsets */
 #define RNDIS_HEADER_OFFSET	(sizeof(uint32_t) * 2)
 #define RNDIS_DATA_OFFSET	(sizeof(struct urndis_packet_msg) - \
-    				 offsetof(struct urndis_packet_msg, \
-    				 rm_dataoffset))
+				 offsetof(struct urndis_packet_msg, \
+				 rm_dataoffset))

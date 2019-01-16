@@ -1,4 +1,4 @@
-/*	$NetBSD: fms.c,v 1.42 2014/03/29 19:28:24 christos Exp $	*/
+/*	$NetBSD: fms.c,v 1.44 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2008 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: fms.c,v 1.42 2014/03/29 19:28:24 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: fms.c,v 1.44 2018/12/09 11:14:02 jdolecek Exp $");
 
 #include "mpu.h"
 
@@ -264,7 +264,8 @@ fms_attach(device_t parent, device_t self, void *aux)
 	mutex_init(&sc->sc_lock, MUTEX_DEFAULT, IPL_NONE);
 	mutex_init(&sc->sc_intr_lock, MUTEX_DEFAULT, IPL_AUDIO);
 
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_AUDIO, fms_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(pc, ih, IPL_AUDIO, fms_intr, sc,
+	    device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "couldn't establish interrupt");
 		if (intrstr != NULL)
@@ -686,10 +687,8 @@ fms_malloc(void *addr, int direction, size_t size)
 
 	sc = addr;
 	p = kmem_alloc(sizeof(*p), KM_SLEEP);
-	if (p == NULL)
-		return NULL;
-
 	p->size = size;
+
 	if ((error = bus_dmamem_alloc(sc->sc_dmat, size, PAGE_SIZE, 0, &p->seg,
 				      1, &rseg, BUS_DMA_WAITOK)) != 0) {
 		aprint_error_dev(sc->sc_dev, "unable to allocate DMA, error = %d\n", error);

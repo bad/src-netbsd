@@ -1,4 +1,4 @@
-/*	$NetBSD: bthidev.c,v 1.29 2014/08/05 07:55:31 rtr Exp $	*/
+/*	$NetBSD: bthidev.c,v 1.31 2018/11/15 23:01:45 jakllsch Exp $	*/
 
 /*-
  * Copyright (c) 2006 Itronix Inc.
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: bthidev.c,v 1.29 2014/08/05 07:55:31 rtr Exp $");
+__KERNEL_RCSID(0, "$NetBSD: bthidev.c,v 1.31 2018/11/15 23:01:45 jakllsch Exp $");
 
 #include <sys/param.h>
 #include <sys/condvar.h>
@@ -54,7 +54,7 @@ __KERNEL_RCSID(0, "$NetBSD: bthidev.c,v 1.29 2014/08/05 07:55:31 rtr Exp $");
 #include <netbt/bluetooth.h>
 #include <netbt/l2cap.h>
 
-#include <dev/usb/hid.h>
+#include <dev/hid/hid.h>
 #include <dev/bluetooth/btdev.h>
 #include <dev/bluetooth/bthid.h>
 #include <dev/bluetooth/bthidev.h>
@@ -284,7 +284,7 @@ bthidev_attach(device_t parent, device_t self, void *aux)
 	h.report_ID = 0;
 	d = hid_start_parse(desc, dlen, hid_none);
 	while (hid_get_item(d, &h)) {
-		if (h.report_ID > maxid)
+		if ((int)h.report_ID > maxid)
 			maxid = h.report_ID;
 	}
 	hid_end_parse(d);
