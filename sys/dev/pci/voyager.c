@@ -1,4 +1,4 @@
-/*	$NetBSD: voyager.c,v 1.11 2016/01/01 20:48:15 macallan Exp $	*/
+/*	$NetBSD: voyager.c,v 1.13 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 2009, 2011 Michael Lorenz
@@ -26,7 +26,7 @@
  */
  
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: voyager.c,v 1.11 2016/01/01 20:48:15 macallan Exp $");
+__KERNEL_RCSID(0, "$NetBSD: voyager.c,v 1.13 2018/12/09 11:14:02 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -87,6 +87,8 @@ struct voyager_softc {
 	void *sc_ih;
 	struct voyager_intr sc_intrs[32];
 };
+
+void *voyager_cookie = NULL;
 
 static int	voyager_match(device_t, cfdata_t, void *);
 static void	voyager_attach(device_t, device_t, void *);
@@ -162,6 +164,8 @@ voyager_attach(device_t parent, device_t self, void *aux)
 	sc->sc_iot = pa->pa_iot;
 	sc->sc_dev = self;
 
+	voyager_cookie = sc;
+
 	pci_aprint_devinfo(pa, NULL);
 
 	if (pci_mapreg_map(pa, 0x14, PCI_MAPREG_TYPE_MEM, 0,
@@ -195,7 +199,9 @@ voyager_attach(device_t parent, device_t self, void *aux)
 	}
 
 	intrstr = pci_intr_string(sc->sc_pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(sc->sc_pc, ih, IPL_AUDIO, voyager_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(sc->sc_pc, ih, IPL_VM,
+	    voyager_intr, NULL, /* so we get the clock frame instead */
+	    device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(self, "couldn't establish interrupt");
 		if (intrstr != NULL)
@@ -389,7 +395,7 @@ voyager_twiddle_bits(void *cookie, int regnum, uint32_t mask, uint32_t bits)
 static int
 voyager_intr(void *cookie)
 {
-	struct voyager_softc *sc = cookie;
+	struct voyager_softc *sc = voyager_cookie;
 	struct voyager_intr *ih;
 	uint32_t intrs;
 	uint32_t mask, bit;
@@ -405,7 +411,11 @@ voyager_intr(void *cookie)
 		intrs &= ~bit;
 		ih = &sc->sc_intrs[num];
 		if (ih->vih_func != NULL) {
-			ih->vih_func(ih->vih_arg);
+			if (ih->vih_arg == NULL) {
+				ih->vih_func(cookie);
+			} else {
+				ih->vih_func(ih->vih_arg);
+			}
 		}
 		ih->vih_count.ev_count++;
 	}

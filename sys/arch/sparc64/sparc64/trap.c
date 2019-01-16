@@ -1,4 +1,4 @@
-/*	$NetBSD: trap.c,v 1.184 2016/07/07 06:55:38 msaitoh Exp $ */
+/*	$NetBSD: trap.c,v 1.189 2018/12/19 13:57:50 maxv Exp $ */
 
 /*
  * Copyright (c) 1996-2002 Eduardo Horvath.  All rights reserved.
@@ -50,11 +50,10 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: trap.c,v 1.184 2016/07/07 06:55:38 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: trap.c,v 1.189 2018/12/19 13:57:50 maxv Exp $");
 
 #include "opt_ddb.h"
 #include "opt_multiprocessor.h"
-#include "opt_compat_svr4.h"
 #include "opt_compat_netbsd32.h"
 
 #include <sys/param.h>
@@ -84,12 +83,6 @@ __KERNEL_RCSID(0, "$NetBSD: trap.c,v 1.184 2016/07/07 06:55:38 msaitoh Exp $");
 #include <machine/db_machdep.h>
 #else
 #include <machine/frame.h>
-#endif
-#ifdef COMPAT_SVR4
-#include <machine/svr4_machdep.h>
-#endif
-#ifdef COMPAT_SVR4_32
-#include <machine/svr4_32_machdep.h>
 #endif
 
 #include <sparc64/sparc64/cache.h>
@@ -601,9 +594,7 @@ dopanic:
 			}
 			/* NOTREACHED */
 		}
-#if defined(COMPAT_SVR4) || defined(COMPAT_SVR4_32)
-badtrap:
-#endif
+
 		/* the following message is gratuitous */
 		/* ... but leave it in until we find anything */
 		printf("%s[%d]: unimplemented software trap 0x%x\n",
@@ -615,25 +606,6 @@ badtrap:
 		ksi.ksi_code = ILL_ILLTRP;
 		ksi.ksi_addr = (void *)pc;
 		break;
-
-#if defined(COMPAT_SVR4) || defined(COMPAT_SVR4_32)
-	case T_SVR4_GETCC:
-	case T_SVR4_SETCC:
-	case T_SVR4_GETPSR:
-	case T_SVR4_SETPSR:
-	case T_SVR4_GETHRTIME:
-	case T_SVR4_GETHRVTIME:
-	case T_SVR4_GETHRESTIME:
-#if defined(COMPAT_SVR4_32)
-		if (svr4_32_trap(type, l))
-			break;
-#endif
-#if defined(COMPAT_SVR4)
-		if (svr4_trap(type, l))
-			break;
-#endif
-		goto badtrap;
-#endif
 
 	case T_AST:
 		want_ast = 0;
@@ -729,15 +701,23 @@ badtrap:
 	case T_LDDF_ALIGN:
 	case T_STDF_ALIGN:
 		{
-		int64_t dsfsr, dsfar=0;
+		int64_t dsfsr = 0, dsfar = 0;
 #ifdef DEBUG
-		int64_t isfsr;
+		int64_t isfsr = 0;
 #endif
-		dsfsr = ldxa(SFSR, ASI_DMMU);
-		if (dsfsr & SFSR_FV)
-			dsfar = ldxa(SFAR, ASI_DMMU);
+		if (!CPU_ISSUN4V) {
+			dsfsr = ldxa(SFSR, ASI_DMMU);
+			if (dsfsr & SFSR_FV)
+				dsfar = ldxa(SFAR, ASI_DMMU);
+		} else {
+			paddr_t mmu_fsa_dfa = cpus->ci_mmufsa
+			  + offsetof(struct mmufsa, dfa);
+			dsfar = ldxa(mmu_fsa_dfa, ASI_PHYS_CACHED);
+		}
 #ifdef DEBUG
-		isfsr = ldxa(SFSR, ASI_IMMU);
+		if (!CPU_ISSUN4V) {
+			isfsr = ldxa(SFSR, ASI_IMMU);
+		}
 #endif
 		/* 
 		 * If we're busy doing copyin/copyout continue

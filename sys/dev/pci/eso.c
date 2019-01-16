@@ -1,4 +1,4 @@
-/*	$NetBSD: eso.c,v 1.66 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: eso.c,v 1.68 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -62,7 +62,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: eso.c,v 1.66 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: eso.c,v 1.68 2018/12/09 11:14:02 jdolecek Exp $");
 
 #include "mpu.h"
 
@@ -392,7 +392,8 @@ eso_attach(device_t parent, device_t self, void *aux)
 	}
 
 	intrstring = pci_intr_string(pa->pa_pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih  = pci_intr_establish(pa->pa_pc, ih, IPL_AUDIO, eso_intr, sc);
+	sc->sc_ih  = pci_intr_establish_xname(pa->pa_pc, ih, IPL_AUDIO,
+	    eso_intr, sc, device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "couldn't establish interrupt");
 		if (intrstring != NULL)
@@ -1639,8 +1640,7 @@ eso_allocm(void *hdl, int direction, size_t size)
 	int error;
 
 	sc = hdl;
-	if ((ed = kmem_alloc(sizeof (*ed), KM_SLEEP)) == NULL)
-		return NULL;
+	ed = kmem_alloc(sizeof (*ed), KM_SLEEP);
 
 	/*
 	 * Apparently the Audio 1 DMA controller's current address

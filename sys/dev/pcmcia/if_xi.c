@@ -1,4 +1,4 @@
-/*	$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $ */
+/*	$NetBSD: if_xi.c,v 1.84 2019/01/08 08:52:46 msaitoh Exp $ */
 /*	OpenBSD: if_xe.c,v 1.9 1999/09/16 11:28:42 niklas Exp 	*/
 
 /*
@@ -55,7 +55,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.84 2019/01/08 08:52:46 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -74,6 +74,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $");
 #include <net/if_media.h>
 #include <net/if_types.h>
 #include <net/if_ether.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -82,9 +83,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $");
 #include <netinet/ip.h>
 #include <netinet/if_inarp.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 /*
  * Maximum number of bytes to read per interrupt.  Linux recommends
@@ -142,7 +140,7 @@ STATIC int xi_ioctl(struct ifnet *, u_long, void *);
 STATIC int xi_mdi_read(device_t, int, int);
 STATIC void xi_mdi_write(device_t, int, int, int);
 STATIC int xi_mediachange(struct ifnet *);
-STATIC u_int16_t xi_get(struct xi_softc *);
+STATIC uint16_t xi_get(struct xi_softc *);
 STATIC void xi_reset(struct xi_softc *);
 STATIC void xi_set_address(struct xi_softc *);
 STATIC void xi_start(struct ifnet *);
@@ -151,7 +149,7 @@ STATIC void xi_stop(struct xi_softc *);
 STATIC void xi_watchdog(struct ifnet *);
 
 void
-xi_attach(struct xi_softc *sc, u_int8_t *myea)
+xi_attach(struct xi_softc *sc, uint8_t *myea)
 {
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 
@@ -219,6 +217,7 @@ xi_attach(struct xi_softc *sc, u_int8_t *myea)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, myea);
 
 	/*
@@ -270,8 +269,8 @@ xi_intr(void *arg)
 {
 	struct xi_softc *sc = arg;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	u_int8_t esr, rsr, isr, rx_status;
-	u_int16_t tx_status, recvcount = 0, tempint;
+	uint8_t esr, rsr, isr, rx_status;
+	uint16_t tx_status, recvcount = 0, tempint;
 
 	DPRINTF(XID_CONFIG, ("xi_intr()\n"));
 
@@ -360,8 +359,7 @@ xi_intr(void *arg)
 	}
 
 	/* Try to start more packets transmitting. */
-	if (IFQ_IS_EMPTY(&ifp->if_snd) == 0)
-		xi_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	/* Detected excessive collisions? */
 	if ((tx_status & EXCESSIVE_COLL) && ifp->if_opackets > 0) {
@@ -387,13 +385,13 @@ end:
 /*
  * Pull a packet from the card into an mbuf chain.
  */
-STATIC u_int16_t
+STATIC uint16_t
 xi_get(struct xi_softc *sc)
 {
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	struct mbuf *top, **mp, *m;
-	u_int16_t pktlen, len, recvcount = 0;
-	u_int8_t *data;
+	uint16_t pktlen, len, recvcount = 0;
+	uint8_t *data;
 
 	DPRINTF(XID_CONFIG, ("xi_get()\n"));
 
@@ -448,12 +446,12 @@ xi_get(struct xi_softc *sc)
 			len -= newdata - m->m_data;
 			m->m_data = newdata;
 		}
-		len = min(pktlen, len);
-		data = mtod(m, u_int8_t *);
+		len = uimin(pktlen, len);
+		data = mtod(m, uint8_t *);
 		if (len > 1) {
 		        len &= ~1;
 			bus_space_read_multi_2(sc->sc_bst, sc->sc_bsh, EDP,
-			    (u_int16_t *)data, len>>1);
+			    (uint16_t *)data, len>>1);
 		} else
 			*data = bus_space_read_1(sc->sc_bst, sc->sc_bsh, EDP);
 		m->m_len = len;
@@ -470,10 +468,6 @@ xi_get(struct xi_softc *sc)
 
 	/* Trim the CRC off the end of the packet. */
 	m_adj(top, -ETHER_CRC_LEN);
-
-	ifp->if_ipackets++;
-
-	bpf_mtap(ifp, top);
 
 	if_percpuq_enqueue(ifp->if_percpuq, top);
 	return (recvcount);
@@ -510,7 +504,7 @@ xi_mdi_pulse(struct xi_softc *sc, int data)
 {
 	bus_space_tag_t bst = sc->sc_bst;
 	bus_space_handle_t bsh = sc->sc_bsh;
-	u_int8_t bit = data ? MDIO_HIGH : MDIO_LOW;
+	uint8_t bit = data ? MDIO_HIGH : MDIO_LOW;
 
 	/* First latch the data bit MDIO with clock bit MDC low...*/
 	bus_space_write_1(bst, bsh, GP2, bit | MDC_LOW);
@@ -528,7 +522,7 @@ xi_mdi_probe(struct xi_softc *sc)
 {
 	bus_space_tag_t bst = sc->sc_bst;
 	bus_space_handle_t bsh = sc->sc_bsh;
-	u_int8_t x;
+	uint8_t x;
 
 	/* Pull clock bit MDCK low... */
 	bus_space_write_1(bst, bsh, GP2, MDC_LOW);
@@ -543,11 +537,11 @@ xi_mdi_probe(struct xi_softc *sc)
 }
 
 /* Pulse out a sequence of data bits. */
-static INLINE void xi_mdi_pulse_bits(struct xi_softc *, u_int32_t, int);
+static INLINE void xi_mdi_pulse_bits(struct xi_softc *, uint32_t, int);
 static INLINE void
-xi_mdi_pulse_bits(struct xi_softc *sc, u_int32_t data, int len)
+xi_mdi_pulse_bits(struct xi_softc *sc, uint32_t data, int len)
 {
-	u_int32_t mask;
+	uint32_t mask;
 
 	for (mask = 1 << (len - 1); mask; mask >>= 1)
 		xi_mdi_pulse(sc, data & mask);
@@ -559,8 +553,8 @@ xi_mdi_read(device_t self, int phy, int reg)
 {
 	struct xi_softc *sc = device_private(self);
 	int i;
-	u_int32_t mask;
-	u_int32_t data = 0;
+	uint32_t mask;
+	uint32_t data = 0;
 
 	PAGE(sc, 2);
 	for (i = 0; i < 32; i++)	/* Synchronize. */
@@ -751,7 +745,7 @@ xi_start(struct ifnet *ifp)
 	bus_space_handle_t bsh = sc->sc_bsh;
 	unsigned int s, len, pad = 0;
 	struct mbuf *m0, *m;
-	u_int16_t space;
+	uint16_t space;
 
 	DPRINTF(XID_CONFIG, ("xi_start()\n"));
 
@@ -782,7 +776,7 @@ xi_start(struct ifnet *ifp)
 
 	PAGE(sc, 0);
 
-	bus_space_write_2(bst, bsh, TRS, (u_int16_t)len + pad + 2);
+	bus_space_write_2(bst, bsh, TRS, (uint16_t)len + pad + 2);
 	space = bus_space_read_2(bst, bsh, TSO) & 0x7fff;
 	if (len + pad + 2 > space) {
 		DPRINTF(XID_FIFO,
@@ -793,7 +787,7 @@ xi_start(struct ifnet *ifp)
 
 	IFQ_DEQUEUE(&ifp->if_snd, m0);
 
-	bpf_mtap(ifp, m0);
+	bpf_mtap(ifp, m0, BPF_D_OUT);
 
 	/*
 	 * Do the output at splhigh() so that an interrupt from another device
@@ -801,18 +795,17 @@ xi_start(struct ifnet *ifp)
 	 */
 	s = splhigh();
 
-	bus_space_write_2(bst, bsh, EDP, (u_int16_t)len + pad);
+	bus_space_write_2(bst, bsh, EDP, (uint16_t)len + pad);
 	for (m = m0; m; ) {
 		if (m->m_len > 1)
 			bus_space_write_multi_2(bst, bsh, EDP,
-			    mtod(m, u_int16_t *), m->m_len>>1);
+			    mtod(m, uint16_t *), m->m_len>>1);
 		if (m->m_len & 1) {
 			DPRINTF(XID_CONFIG, ("xi: XXX odd!\n"));
 			bus_space_write_1(bst, bsh, EDP,
-			    *(mtod(m, u_int8_t *) + m->m_len - 1));
+			    *(mtod(m, uint8_t *) + m->m_len - 1));
 		}
-		MFREE(m, m0);
-		m = m0;
+		m = m0 = m_free(m);
 	}
 	DPRINTF(XID_CONFIG, ("xi: len=%d pad=%d total=%d\n", len, pad, len+pad+4));
 	if (sc->sc_chipset >= XI_CHIPSET_MOHAWK)
@@ -957,13 +950,13 @@ xi_set_address(struct xi_softc *sc)
 	struct ether_multi *enm;
 	int page, num;
 	int i;
-	u_int8_t x;
-	const u_int8_t *enaddr;
-	u_int8_t indaddr[64];
+	uint8_t x;
+	const uint8_t *enaddr;
+	uint8_t indaddr[64];
 
 	DPRINTF(XID_CONFIG, ("xi_set_address()\n"));
 
-	enaddr = (const u_int8_t *)CLLADDR(ifp->if_sadl);
+	enaddr = (const uint8_t *)CLLADDR(ifp->if_sadl);
 	if (sc->sc_chipset >= XI_CHIPSET_MOHAWK)
 		for (i = 0; i < 6; i++)
 			indaddr[i] = enaddr[5 - i];
@@ -1072,7 +1065,7 @@ xi_full_reset(struct xi_softc *sc)
 {
 	bus_space_tag_t bst = sc->sc_bst;
 	bus_space_handle_t bsh = sc->sc_bsh;
-	u_int8_t x;
+	uint8_t x;
 
 	DPRINTF(XID_CONFIG, ("xi_full_reset()\n"));
 

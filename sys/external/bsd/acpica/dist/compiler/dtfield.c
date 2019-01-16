@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +42,6 @@
  */
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
 
 #define _COMPONENT          DT_COMPILER
         ACPI_MODULE_NAME    ("dtfield")
@@ -173,8 +172,8 @@ DtCompileString (
 
     if (Length > ByteLength)
     {
-        snprintf (MsgBuffer, sizeof(MsgBuffer), "Maximum %u characters", ByteLength);
-        DtError (ASL_ERROR, ASL_MSG_STRING_LENGTH, Field, MsgBuffer);
+        snprintf (AslGbl_MsgBuffer, sizeof(AslGbl_MsgBuffer), "Maximum %u characters", ByteLength);
+        DtError (ASL_ERROR, ASL_MSG_STRING_LENGTH, Field, AslGbl_MsgBuffer);
         Length = ByteLength;
     }
 
@@ -253,8 +252,8 @@ DtCompileUuid (
     Status = AuValidateUuid (InString);
     if (ACPI_FAILURE (Status))
     {
-        snprintf (MsgBuffer, sizeof(MsgBuffer), "%s", Field->Value);
-        DtNameError (ASL_ERROR, ASL_MSG_INVALID_UUID, Field, MsgBuffer);
+        snprintf (AslGbl_MsgBuffer, sizeof(AslGbl_MsgBuffer), "%s", Field->Value);
+        DtNameError (ASL_ERROR, ASL_MSG_INVALID_UUID, Field, AslGbl_MsgBuffer);
     }
     else
     {
@@ -355,9 +354,9 @@ DtCompileInteger (
 
     if (Value > MaxValue)
     {
-        snprintf (MsgBuffer, sizeof(MsgBuffer), "%8.8X%8.8X - max %u bytes",
+        snprintf (AslGbl_MsgBuffer, sizeof(AslGbl_MsgBuffer), "%8.8X%8.8X - max %u bytes",
             ACPI_FORMAT_UINT64 (Value), ByteLength);
-        DtError (ASL_ERROR, ASL_MSG_INTEGER_SIZE, Field, MsgBuffer);
+        DtError (ASL_ERROR, ASL_MSG_INTEGER_SIZE, Field, AslGbl_MsgBuffer);
     }
 
     memcpy (Buffer, &Value, ByteLength);
@@ -370,10 +369,10 @@ DtCompileInteger (
  * FUNCTION:    DtNormalizeBuffer
  *
  * PARAMETERS:  Buffer              - Input buffer
- *              Count               - Output the count of hex number in
+ *              Count               - Output the count of hex numbers in
  *                                    the Buffer
  *
- * RETURN:      The normalized buffer, freed by caller
+ * RETURN:      The normalized buffer, must be freed by caller
  *
  * DESCRIPTION: [1A,2B,3C,4D] or 1A, 2B, 3C, 4D will be normalized
  *              to 1A 2B 3C 4D
@@ -457,36 +456,38 @@ DtCompileBuffer (
     DT_FIELD                *Field,
     UINT32                  ByteLength)
 {
+    char                    *Substring;
     ACPI_STATUS             Status;
-    char                    Hex[3];
-    UINT64                  Value;
-    UINT32                  i;
     UINT32                  Count;
+    UINT32                  i;
 
 
     /* Allow several different types of value separators */
 
     StringValue = DtNormalizeBuffer (StringValue, &Count);
+    Substring = StringValue;
 
-    Hex[2] = 0;
-    for (i = 0; i < Count; i++)
+    /* Each element of StringValue is now three chars (2 hex + 1 space) */
+
+    for (i = 0; i < Count; i++, Substring += 3)
     {
-        /* Each element of StringValue is three chars */
+        /* Check for byte value too long */
 
-        Hex[0] = StringValue[(3 * i)];
-        Hex[1] = StringValue[(3 * i) + 1];
-
-        /* Convert one hex byte */
-
-        Value = 0;
-        Status = DtStrtoul64 (Hex, &Value);
-        if (ACPI_FAILURE (Status))
+        if (*(&Substring[2]) &&
+           (*(&Substring[2]) != ' '))
         {
-            DtError (ASL_ERROR, ASL_MSG_BUFFER_ELEMENT, Field, MsgBuffer);
+            DtError (ASL_ERROR, ASL_MSG_BUFFER_ELEMENT, Field, Substring);
             goto Exit;
         }
 
-        Buffer[i] = (UINT8) Value;
+        /* Convert two ASCII characters to one hex byte */
+
+        Status = AcpiUtAsciiToHexByte (Substring, &Buffer[i]);
+        if (ACPI_FAILURE (Status))
+        {
+            DtError (ASL_ERROR, ASL_MSG_BUFFER_ELEMENT, Field, Substring);
+            goto Exit;
+        }
     }
 
 Exit:
@@ -499,13 +500,13 @@ Exit:
  *
  * FUNCTION:    DtCompileFlag
  *
- * PARAMETERS:  Buffer              - Output buffer
- *              Field               - Field to be compiled
- *              Info                - Flag info
+ * PARAMETERS:  Buffer                      - Output buffer
+ *              Field                       - Field to be compiled
+ *              Info                        - Flag info
  *
- * RETURN:
+ * RETURN:      None
  *
- * DESCRIPTION: Compile a flag
+ * DESCRIPTION: Compile a flag field. Handles flags up to 64 bits.
  *
  *****************************************************************************/
 
@@ -518,14 +519,9 @@ DtCompileFlag (
     UINT64                  Value = 0;
     UINT32                  BitLength = 1;
     UINT8                   BitPosition = 0;
-    ACPI_STATUS             Status;
 
 
-    Status = DtStrtoul64 (Field->Value, &Value);
-    if (ACPI_FAILURE (Status))
-    {
-        DtError (ASL_ERROR, ASL_MSG_INVALID_HEX_INTEGER, Field, NULL);
-    }
+    Value = AcpiUtImplicitStrtoul64 (Field->Value);
 
     switch (Info->Opcode)
     {
@@ -568,6 +564,36 @@ DtCompileFlag (
         BitLength = 2;
         break;
 
+    case ACPI_DMT_FLAGS4_0:
+
+        BitPosition = 0;
+        BitLength = 4;
+        break;
+
+    case ACPI_DMT_FLAGS4_4:
+
+        BitPosition = 4;
+        BitLength = 4;
+        break;
+
+    case ACPI_DMT_FLAGS4_8:
+
+        BitPosition = 8;
+        BitLength = 4;
+        break;
+
+    case ACPI_DMT_FLAGS4_12:
+
+        BitPosition = 12;
+        BitLength = 4;
+        break;
+
+    case ACPI_DMT_FLAGS16_16:
+
+        BitPosition = 16;
+        BitLength = 16;
+        break;
+
     default:
 
         DtFatal (ASL_MSG_COMPILER_INTERNAL, Field, "Invalid flag opcode");
@@ -578,8 +604,8 @@ DtCompileFlag (
 
     if (Value >= ((UINT64) 1 << BitLength))
     {
-        snprintf (MsgBuffer, sizeof(MsgBuffer), "Maximum %u bit", BitLength);
-        DtError (ASL_ERROR, ASL_MSG_FLAG_VALUE, Field, MsgBuffer);
+        snprintf (AslGbl_MsgBuffer, sizeof(AslGbl_MsgBuffer), "Maximum %u bit", BitLength);
+        DtError (ASL_ERROR, ASL_MSG_FLAG_VALUE, Field, AslGbl_MsgBuffer);
         Value = 0;
     }
 

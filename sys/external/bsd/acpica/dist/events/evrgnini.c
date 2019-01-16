@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -45,15 +45,10 @@
 #include "accommon.h"
 #include "acevents.h"
 #include "acnamesp.h"
+#include "acinterp.h"
 
 #define _COMPONENT          ACPI_EVENTS
         ACPI_MODULE_NAME    ("evrgnini")
-
-/* Local prototypes */
-
-static BOOLEAN
-AcpiEvIsPciRootBridge (
-    ACPI_NAMESPACE_NODE     *Node);
 
 
 /*******************************************************************************
@@ -381,7 +376,7 @@ AcpiEvPciConfigRegionSetup (
  *
  ******************************************************************************/
 
-static BOOLEAN
+BOOLEAN
 AcpiEvIsPciRootBridge (
     ACPI_NAMESPACE_NODE     *Node)
 {
@@ -537,7 +532,6 @@ AcpiEvDefaultRegionSetup (
  * FUNCTION:    AcpiEvInitializeRegion
  *
  * PARAMETERS:  RegionObj       - Region we are initializing
- *              AcpiNsLocked    - Is namespace locked?
  *
  * RETURN:      Status
  *
@@ -555,21 +549,33 @@ AcpiEvDefaultRegionSetup (
  * MUTEX:       Interpreter should be unlocked, because we may run the _REG
  *              method for this region.
  *
+ * NOTE:        Possible incompliance:
+ *              There is a behavior conflict in automatic _REG execution:
+ *              1. When the interpreter is evaluating a method, we can only
+ *                 automatically run _REG for the following case:
+ *                   Method(_REG, 2) {}
+ *                   OperationRegion (OPR1, 0x80, 0x1000010, 0x4)
+ *              2. When the interpreter is loading a table, we can also
+ *                 automatically run _REG for the following case:
+ *                   OperationRegion (OPR1, 0x80, 0x1000010, 0x4)
+ *                   Method(_REG, 2) {}
+ *              Though this may not be compliant to the de-facto standard, the
+ *              logic is kept in order not to trigger regressions. And keeping
+ *              this logic should be taken care by the caller of this function.
+ *
  ******************************************************************************/
 
 ACPI_STATUS
 AcpiEvInitializeRegion (
-    ACPI_OPERAND_OBJECT     *RegionObj,
-    BOOLEAN                 AcpiNsLocked)
+    ACPI_OPERAND_OBJECT     *RegionObj)
 {
     ACPI_OPERAND_OBJECT     *HandlerObj;
     ACPI_OPERAND_OBJECT     *ObjDesc;
     ACPI_ADR_SPACE_TYPE     SpaceId;
     ACPI_NAMESPACE_NODE     *Node;
-    ACPI_STATUS             Status;
 
 
-    ACPI_FUNCTION_TRACE_U32 (EvInitializeRegion, AcpiNsLocked);
+    ACPI_FUNCTION_TRACE (EvInitializeRegion);
 
 
     if (!RegionObj)
@@ -616,9 +622,13 @@ AcpiEvInitializeRegion (
                  * Node's object was replaced by this Method object and we
                  * saved the handler in the method object.
                  *
+                 * Note: Only used for the legacy MLC support. Will
+                 * be removed in the future.
+                 *
                  * See AcpiNsExecModuleCode
                  */
-                if (ObjDesc->Method.InfoFlags & ACPI_METHOD_MODULE_LEVEL)
+                if (!AcpiGbl_ExecuteTablesAsMethods &&
+                    ObjDesc->Method.InfoFlags & ACPI_METHOD_MODULE_LEVEL)
                 {
                     HandlerObj = ObjDesc->Method.Dispatch.Handler;
                 }
@@ -640,33 +650,15 @@ AcpiEvInitializeRegion (
                     "Found handler %p for region %p in obj %p\n",
                     HandlerObj, RegionObj, ObjDesc));
 
-                Status = AcpiEvAttachRegion (HandlerObj, RegionObj,
-                    AcpiNsLocked);
+                (void) AcpiEvAttachRegion (HandlerObj, RegionObj, FALSE);
 
                 /*
                  * Tell all users that this region is usable by
                  * running the _REG method
                  */
-                if (AcpiNsLocked)
-                {
-                    Status = AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
-                    if (ACPI_FAILURE (Status))
-                    {
-                        return_ACPI_STATUS (Status);
-                    }
-                }
-
-                Status = AcpiEvExecuteRegMethod (RegionObj, ACPI_REG_CONNECT);
-
-                if (AcpiNsLocked)
-                {
-                    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
-                    if (ACPI_FAILURE (Status))
-                    {
-                        return_ACPI_STATUS (Status);
-                    }
-                }
-
+                AcpiExExitInterpreter ();
+                (void) AcpiEvExecuteRegMethod (RegionObj, ACPI_REG_CONNECT);
+                AcpiExEnterInterpreter ();
                 return_ACPI_STATUS (AE_OK);
             }
         }
@@ -676,11 +668,14 @@ AcpiEvInitializeRegion (
         Node = Node->Parent;
     }
 
-    /* If we get here, there is no handler for this region */
-
+    /*
+     * If we get here, there is no handler for this region. This is not
+     * fatal because many regions get created before a handler is installed
+     * for said region.
+     */
     ACPI_DEBUG_PRINT ((ACPI_DB_OPREGION,
         "No handler for RegionType %s(%X) (RegionObj %p)\n",
         AcpiUtGetRegionName (SpaceId), SpaceId, RegionObj));
 
-    return_ACPI_STATUS (AE_NOT_EXIST);
+    return_ACPI_STATUS (AE_OK);
 }

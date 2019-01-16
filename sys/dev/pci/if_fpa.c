@@ -1,4 +1,4 @@
-/*	$NetBSD: if_fpa.c,v 1.60 2015/01/25 07:33:24 martin Exp $	*/
+/*	$NetBSD: if_fpa.c,v 1.62 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 1995, 1996 Matt Thomas <matt@3am-software.com>
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_fpa.c,v 1.60 2015/01/25 07:33:24 martin Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_fpa.c,v 1.62 2018/12/09 11:14:02 jdolecek Exp $");
 
 #ifdef __NetBSD__
 #include "opt_inet.h"
@@ -58,9 +58,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_fpa.c,v 1.60 2015/01/25 07:33:24 martin Exp $");
 #include <net/if_types.h>
 #include <net/if_dl.h>
 #include <net/route.h>
-
 #include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #if defined(__FreeBSD__)
 #include <netinet/if_fddi.h>
@@ -474,7 +472,8 @@ pdq_pci_attach(device_t const parent, device_t const self, void *const aux)
 	return;
     }
     intrstr = pci_intr_string(pa->pa_pc, intrhandle, intrbuf, sizeof(intrbuf));
-    sc->sc_ih = pci_intr_establish(pa->pa_pc, intrhandle, IPL_NET, pdq_pci_ifintr, sc);
+    sc->sc_ih = pci_intr_establish_xname(pa->pa_pc, intrhandle, IPL_NET,
+        pdq_pci_ifintr, sc, device_xname(self));
     if (sc->sc_ih == NULL) {
 	aprint_error_dev(self, "couldn't establish interrupt");
 	if (intrstr != NULL)

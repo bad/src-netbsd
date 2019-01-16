@@ -1,4 +1,4 @@
-/*	$NetBSD: spl.S,v 1.30 2015/11/22 13:41:24 maxv Exp $	*/
+/*	$NetBSD: spl.S,v 1.38 2018/12/26 11:12:57 cherry Exp $	*/
 
 /*
  * Copyright (c) 2003 Wasabi Systems, Inc.
@@ -65,6 +65,7 @@
  */
 
 #include "opt_ddb.h"
+#include "opt_kasan.h"
 
 #define ALIGN_TEXT	.align 16,0x90
 
@@ -76,6 +77,17 @@
 #include "assym.h"
 
 	.text
+
+/*
+ * int splraise(int s);
+ */
+ENTRY(splraise)
+	movl	CPUVAR(ILEVEL),%eax
+	cmpl	%edi,%eax
+	cmoval	%eax,%edi
+	movl	%edi,CPUVAR(ILEVEL)
+	ret
+END(splraise)
 
 #ifndef XEN
 /*
@@ -90,33 +102,55 @@
  *	%r13		address to return to
  */
 IDTVEC(softintr)
-	pushq	$_C_LABEL(softintr_ret)	/* set up struct switchframe */
+	/* set up struct switchframe */
+	pushq	$_C_LABEL(softintr_ret)
 	pushq	%rbx
 	pushq	%r12
 	pushq	%r13
 	pushq	%r14
 	pushq	%r15
+
 	movl	$IPL_HIGH,CPUVAR(ILEVEL)
 	movq	CPUVAR(CURLWP),%r15
 	movq	IS_LWP(%rax),%rdi	/* switch to handler LWP */
 	movq	L_PCB(%rdi),%rdx
 	movq	L_PCB(%r15),%rcx
 	movq	%rdi,CPUVAR(CURLWP)
+
+#ifdef KASAN
+	/* clear the new stack */
+	pushq	%rax
+	pushq	%rdx
+	pushq	%rcx
+	callq	_C_LABEL(kasan_softint)
+	popq	%rcx
+	popq	%rdx
+	popq	%rax
+#endif
+
+	/* save old context */
 	movq	%rsp,PCB_RSP(%rcx)
 	movq	%rbp,PCB_RBP(%rcx)
-	movq	PCB_RSP0(%rdx),%rsp	/* onto new stack */
+
+	/* switch to the new stack */
+	movq	PCB_RSP0(%rdx),%rsp
+
+	/* dispatch */
 	sti
 	movq	%r15,%rdi		/* interrupted LWP */
 	movl	IS_MAXLEVEL(%rax),%esi	/* ipl to run at */
 	call	_C_LABEL(softint_dispatch)/* run handlers */
 	cli
+
+	/* restore old context */
 	movq	L_PCB(%r15),%rcx
 	movq	PCB_RSP(%rcx),%rsp
+
 	xchgq	%r15,CPUVAR(CURLWP)	/* must be globally visible */
 	popq	%r15			/* unwind switchframe */
 	addq	$(5 * 8),%rsp
 	jmp	*%r13			/* back to Xspllower/Xdoreti */
-END(Xsoftintr)
+IDTVEC_END(softintr)
 
 /*
  * softintr_ret()
@@ -126,9 +160,9 @@ END(Xsoftintr)
  *
  *	%rax		prevlwp from cpu_switchto()
  */
-NENTRY(softintr_ret)
+ENTRY(softintr_ret)
 	incl	CPUVAR(MTX_COUNT)	/* re-adjust after mi_switch */
-	movl	$0, L_CTXSWTCH(%rax)	/* %rax from cpu_switchto */
+	movl	$0,L_CTXSWTCH(%rax)	/* %rax from cpu_switchto */
 	cli
 	jmp	*%r13			/* back to Xspllower/Xdoreti */
 END(softintr_ret)
@@ -138,56 +172,45 @@ END(softintr_ret)
  *
  * Software interrupt registration.
  */
-NENTRY(softint_trigger)
+ENTRY(softint_trigger)
 	orl	%edi,CPUVAR(IPENDING)	/* atomic on local cpu */
 	ret
 END(softint_trigger)
 
 
 /*
- * Xpreemptrecurse()
+ * Xrecurse_preempt()
  *
  * Handles preemption interrupts via Xspllower().
  */
-IDTVEC(preemptrecurse)
-	movl	$IPL_PREEMPT, CPUVAR(ILEVEL)
+IDTVEC(recurse_preempt)
+	movl	$IPL_PREEMPT,CPUVAR(ILEVEL)
 	sti
-	xorq	%rdi, %rdi
+	xorq	%rdi,%rdi
 	call	_C_LABEL(kpreempt)
 	cli
 	jmp	*%r13			/* back to Xspllower */
-END(Xpreemptrecurse)
+IDTVEC_END(recurse_preempt)
 
 /*
- * Xpreemptresume()
+ * Xresume_preempt()
  *
  * Handles preemption interrupts via Xdoreti().
  */
-IDTVEC(preemptresume)
-	movl	$IPL_PREEMPT, CPUVAR(ILEVEL)
+IDTVEC(resume_preempt)
+	movl	$IPL_PREEMPT,CPUVAR(ILEVEL)
 	sti
-	testq	$SEL_RPL, TF_CS(%rsp)
+	testq	$SEL_RPL,TF_CS(%rsp)
 	jnz	1f
-	movq	TF_RIP(%rsp), %rdi
-	call	_C_LABEL(kpreempt)		# from kernel
+	movq	TF_RIP(%rsp),%rdi
+	call	_C_LABEL(kpreempt)	/* from kernel */
 	cli
 	jmp	*%r13			/* back to Xdoreti */
 1:
-	call	_C_LABEL(preempt)		# from user
+	call	_C_LABEL(preempt)	/* from user */
 	cli
 	jmp	*%r13			/* back to Xdoreti */
-END(Xpreemptresume)
-
-/*
- * int splraise(int s);
- */
-ENTRY(splraise)
-	movl	CPUVAR(ILEVEL),%eax
-	cmpl	%edi,%eax
-	cmoval	%eax,%edi
-	movl	%edi,CPUVAR(ILEVEL)
-	ret
-END(splraise)
+IDTVEC_END(resume_preempt)
 
 /*
  * void spllower(int s);
@@ -197,14 +220,14 @@ END(splraise)
  * are disabled via eflags/IE.
  */
 ENTRY(spllower)
-	cmpl	CPUVAR(ILEVEL), %edi
+	cmpl	CPUVAR(ILEVEL),%edi
 	jae	1f
-	movl	CPUVAR(IUNMASK)(,%rdi,4), %edx
+	movl	CPUVAR(IUNMASK)(,%rdi,4),%edx
 	pushf
 	cli
-	testl	CPUVAR(IPENDING), %edx
+	testl	CPUVAR(IPENDING),%edx
 	jnz	2f
-	movl	%edi, CPUVAR(ILEVEL)
+	movl	%edi,CPUVAR(ILEVEL)
 	popf
 1:
 	ret
@@ -217,14 +240,13 @@ ENTRY(spllower)
 	.align	16
 END(spllower)
 LABEL(spllower_end)
-#endif /* !XEN */
 
 /*
  * void	cx8_spllower(int s);
  *
  * For cmpxchg8b, edx/ecx are the high words and eax/ebx the low.
  *
- * edx : eax = old level / old ipending 
+ * edx : eax = old level / old ipending
  * ecx : ebx = new level / old ipending
  */
 ENTRY(cx8_spllower)
@@ -257,10 +279,11 @@ LABEL(cx8_spllower_patch)
 END(cx8_spllower_patch)
 END(cx8_spllower)
 LABEL(cx8_spllower_end)
+#endif /* !XEN */
 
 /*
  * void Xspllower(int s);
- * 
+ *
  * Process pending interrupts.
  *
  * Important registers:
@@ -283,28 +306,41 @@ IDTVEC(spllower)
 	pushq	%r13
 	pushq	%r12
 	movl	%edi,%ebx
-	leaq	1f(%rip),%r13		# address to resume loop at
-1:	movl	%ebx,%eax		# get cpl
+	leaq	1f(%rip),%r13		/* address to resume loop at */
+1:	movl	%ebx,%eax		/* get cpl */
+#if !defined(XEN)
 	movl	CPUVAR(IUNMASK)(,%rax,4),%eax
 	CLI(si)
-	andl	CPUVAR(IPENDING),%eax		# any non-masked bits left?
+	andl	CPUVAR(IPENDING),%eax	/* any non-masked bits left? */
 	jz	2f
 	bsrl	%eax,%eax
 	btrl	%eax,CPUVAR(IPENDING)
 	movq	CPUVAR(ISOURCES)(,%rax,8),%rax
 	jmp	*IS_RECURSE(%rax)
+#endif
 2:
+#if defined(XEN)
+	movl	CPUVAR(XUNMASK)(,%rax,4),%eax
+	CLI(si)
+	andl	CPUVAR(XPENDING),%eax	/* any non-masked bits left? */
+	jz	3f
+	bsrl	%eax,%eax
+	btrl	%eax,CPUVAR(XPENDING)
+	movq	CPUVAR(XSOURCES)(,%rax,8),%rax
+	jmp	*IS_RECURSE(%rax)
+#endif
+3:
 	movl	%ebx,CPUVAR(ILEVEL)
 	STI(si)
 	popq	%r12
 	popq	%r13
 	popq	%rbx
 	ret
-END(Xspllower)
+IDTVEC_END(spllower)
 
 /*
  * void Xdoreti(void);
- * 
+ *
  * Handle return from interrupt after device handler finishes.
  *
  * Important registers:
@@ -312,19 +348,32 @@ END(Xspllower)
  *   r13 - address to resume loop at
  */
 IDTVEC(doreti)
-	popq	%rbx			# get previous priority
+	popq	%rbx			/* get previous priority */
 	decl	CPUVAR(IDEPTH)
 	leaq	1f(%rip),%r13
 1:	movl	%ebx,%eax
+#if !defined(XEN)
 	movl	CPUVAR(IUNMASK)(,%rax,4),%eax
 	CLI(si)
 	andl	CPUVAR(IPENDING),%eax
 	jz	2f
-	bsrl	%eax,%eax		# slow, but not worth optimizing
+	bsrl	%eax,%eax		/* slow, but not worth optimizing */
 	btrl	%eax,CPUVAR(IPENDING)
-	movq	CPUVAR(ISOURCES)(,%rax, 8),%rax
+	movq	CPUVAR(ISOURCES)(,%rax,8),%rax
 	jmp	*IS_RESUME(%rax)
-2:	/* Check for ASTs on exit to user mode. */
+#endif
+2:
+#if defined(XEN)
+	movl	CPUVAR(XUNMASK)(,%rax,4),%eax
+	CLI(si)
+	andl	CPUVAR(XPENDING),%eax
+	jz	3f
+	bsrl	%eax,%eax		/* slow, but not worth optimizing */
+	btrl	%eax,CPUVAR(XPENDING)
+	movq	CPUVAR(XSOURCES)(,%rax,8),%rax
+	jmp	*IS_RESUME(%rax)
+#endif
+3:	/* Check for ASTs on exit to user mode. */
 	movl	%ebx,CPUVAR(ILEVEL)
 5:
 	testb	$SEL_RPL,TF_CS(%rsp)
@@ -354,4 +403,4 @@ LABEL(doreti_checkast)
 	CLI(si)
 	jmp	doreti_checkast		/* recheck ASTs */
 END(doreti_checkast)
-END(Xdoreti)
+IDTVEC_END(doreti)

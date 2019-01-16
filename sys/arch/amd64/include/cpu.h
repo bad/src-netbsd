@@ -1,4 +1,4 @@
-/*	$NetBSD: cpu.h,v 1.60 2012/01/21 16:48:56 chs Exp $	*/
+/*	$NetBSD: cpu.h,v 1.63 2018/11/18 23:50:48 cherry Exp $	*/
 
 /*-
  * Copyright (c) 1990 The Regents of the University of California.
@@ -83,14 +83,15 @@ cpu_set_curpri(int pri)
 }
 #endif	/* __GNUC__ && !_MODULE */
 
-#define	CLKF_USERMODE(frame)	USERMODE((frame)->cf_if.if_tf.tf_cs, \
-				    (frame)->cf_if.if_tf.tf_rflags)
+#ifdef XEN
+#define	CLKF_USERMODE(frame)	(curcpu()->ci_xen_clockf_usermode)
+#define CLKF_PC(frame)		(curcpu()->ci_xen_clockf_pc)
+#else /* XEN */
+#define	CLKF_USERMODE(frame)	USERMODE((frame)->cf_if.if_tf.tf_cs)
 #define CLKF_PC(frame)		((frame)->cf_if.if_tf.tf_rip)
+#endif /* XEN */
 #define CLKF_INTR(frame)	(curcpu()->ci_idepth > 0)
 #define LWP_PC(l)		((l)->l_md.md_regs->tf_rip)
-
-void	*cpu_uarea_alloc(bool);
-bool	cpu_uarea_free(void *);
 
 #endif	/* _KERNEL */
 

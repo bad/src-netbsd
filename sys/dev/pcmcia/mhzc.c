@@ -1,4 +1,4 @@
-/*	$NetBSD: mhzc.c,v 1.50 2012/10/27 17:18:37 chs Exp $	*/
+/*	$NetBSD: mhzc.c,v 1.52 2018/12/08 17:46:14 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2004 The NetBSD Foundation, Inc.
@@ -39,7 +39,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: mhzc.c,v 1.50 2012/10/27 17:18:37 chs Exp $");
+__KERNEL_RCSID(0, "$NetBSD: mhzc.c,v 1.52 2018/12/08 17:46:14 thorpej Exp $");
 
 #include "opt_inet.h"
 
@@ -60,6 +60,7 @@ __KERNEL_RCSID(0, "$NetBSD: mhzc.c,v 1.50 2012/10/27 17:18:37 chs Exp $");
 #include <net/if_dl.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -68,10 +69,6 @@ __KERNEL_RCSID(0, "$NetBSD: mhzc.c,v 1.50 2012/10/27 17:18:37 chs Exp $");
 #include <netinet/ip.h>
 #include <netinet/if_inarp.h>
 #endif
-
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/intr.h>
 #include <sys/bus.h>
@@ -622,7 +619,7 @@ com_mhzc_attach(device_t parent, device_t self, void *aux)
 	sc->sc_dev = self;
 	aprint_normal("\n");
 
-	COM_INIT_REGS(sc->sc_regs, 
+	com_init_regs(&sc->sc_regs, 
 	    msc->sc_modem_pcioh.iot,
 	    msc->sc_modem_pcioh.ioh,
 	    -1);

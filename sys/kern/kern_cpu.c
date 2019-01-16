@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_cpu.c,v 1.71 2015/08/29 12:24:00 maxv Exp $	*/
+/*	$NetBSD: kern_cpu.c,v 1.75 2018/11/13 11:06:19 skrll Exp $	*/
 
 /*-
  * Copyright (c) 2007, 2008, 2009, 2010, 2012 The NetBSD Foundation, Inc.
@@ -56,10 +56,9 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_cpu.c,v 1.71 2015/08/29 12:24:00 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_cpu.c,v 1.75 2018/11/13 11:06:19 skrll Exp $");
 
 #include "opt_cpu_ucode.h"
-#include "opt_compat_netbsd.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -128,6 +127,7 @@ struct cpu_info **cpu_infos		__read_mostly;
 kcpuset_t *	kcpuset_attached	__read_mostly	= NULL;
 kcpuset_t *	kcpuset_running		__read_mostly	= NULL;
 
+int (*compat_cpuctl_ioctl)(struct lwp *, u_long, void *) = (void *)enosys;
 
 static char cpu_model[128];
 
@@ -285,12 +285,6 @@ cpuctl_ioctl(dev_t dev, u_long cmd, void *data, int flag, lwp_t *l)
 		error = cpu_ucode_get_version((struct cpu_ucode_version *)data);
 		break;
 
-#ifdef COMPAT_60
-	case OIOC_CPU_UCODE_GET_VERSION:
-		error = compat6_cpu_ucode_get_version((struct compat6_cpu_ucode *)data);
-		break;
-#endif
-
 	case IOC_CPU_UCODE_APPLY:
 		error = kauth_authorize_machdep(l->l_cred,
 		    KAUTH_MACHDEP_CPU_UCODE_APPLY,
@@ -299,21 +293,10 @@ cpuctl_ioctl(dev_t dev, u_long cmd, void *data, int flag, lwp_t *l)
 			break;
 		error = cpu_ucode_apply((const struct cpu_ucode *)data);
 		break;
-
-#ifdef COMPAT_60
-	case OIOC_CPU_UCODE_APPLY:
-		error = kauth_authorize_machdep(l->l_cred,
-		    KAUTH_MACHDEP_CPU_UCODE_APPLY,
-		    NULL, NULL, NULL, NULL);
-		if (error != 0)
-			break;
-		error = compat6_cpu_ucode_apply((const struct compat6_cpu_ucode *)data);
-		break;
-#endif
 #endif
 
 	default:
-		error = ENOTTY;
+		error = (*compat_cpuctl_ioctl)(l, cmd, data);
 		break;
 	}
 	mutex_exit(&cpu_lock);
@@ -326,7 +309,11 @@ cpu_lookup(u_int idx)
 {
 	struct cpu_info *ci;
 
-	KASSERT(idx < maxcpus);
+	/*
+	 * cpu_infos is a NULL terminated array of MAXCPUS + 1 entries,
+	 * so an index of MAXCPUS here is ok.  See mi_cpu_attach.
+	 */
+	KASSERT(idx <= maxcpus);
 
 	if (__predict_false(cpu_infos == NULL)) {
 		KASSERT(idx == 0);
@@ -335,6 +322,7 @@ cpu_lookup(u_int idx)
 
 	ci = cpu_infos[idx];
 	KASSERT(ci == NULL || cpu_index(ci) == idx);
+	KASSERTMSG(idx < maxcpus || ci == NULL, "idx %d ci %p", idx, ci);
 
 	return ci;
 }
@@ -619,6 +607,11 @@ cpu_ucode_load(struct cpu_ucode_softc *sc, const char *fwname)
 	}
 
 	sc->sc_blobsize = firmware_get_size(fwh);
+	if (sc->sc_blobsize == 0) {
+		error = EFTYPE;
+		firmware_close(fwh);
+		goto err0;
+	}
 	sc->sc_blob = firmware_malloc(sc->sc_blobsize);
 	if (sc->sc_blob == NULL) {
 		error = ENOMEM;

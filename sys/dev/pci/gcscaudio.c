@@ -1,4 +1,4 @@
-/*	$NetBSD: gcscaudio.c,v 1.14 2014/03/29 19:28:24 christos Exp $	*/
+/*	$NetBSD: gcscaudio.c,v 1.16 2018/12/09 11:14:02 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2008 SHIMIZU Ryo <ryo@nerv.org>
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: gcscaudio.c,v 1.14 2014/03/29 19:28:24 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: gcscaudio.c,v 1.16 2018/12/09 11:14:02 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -294,8 +294,8 @@ gcscaudio_attach(device_t parent, device_t self, void *aux)
 	}
 	intrstr = pci_intr_string(sc->sc_pc, ih, intrbuf, sizeof(intrbuf));
 
-	sc->sc_ih = pci_intr_establish(sc->sc_pc, ih, IPL_AUDIO,
-	    gcscaudio_intr, sc);
+	sc->sc_ih = pci_intr_establish_xname(sc->sc_pc, ih, IPL_AUDIO,
+	    gcscaudio_intr, sc, device_xname(self));
 	if (sc->sc_ih == NULL) {
 		aprint_error_dev(sc->sc_dev, "couldn't establish interrupt");
 		if (intrstr != NULL)
@@ -679,8 +679,6 @@ gcscaudio_malloc(void *arg, int direction, size_t size)
 	sc = (struct gcscaudio_softc *)arg;
 
 	p = kmem_alloc(sizeof(*p), KM_SLEEP);
-	if (p == NULL)
-		return NULL;
 	p->size = size;
 
 	error = gcscaudio_allocate_dma(sc, size, &p->addr,

@@ -1,4 +1,4 @@
-/*	$NetBSD: if_bgevar.h,v 1.21 2015/11/18 10:26:57 msaitoh Exp $	*/
+/*	$NetBSD: if_bgevar.h,v 1.24 2018/11/27 19:17:02 bouyer Exp $	*/
 /*
  * Copyright (c) 2001 Wind River Systems
  * Copyright (c) 1997, 1998, 1999, 2001
@@ -249,6 +249,8 @@ struct bge_bcom_hack {
 
 struct txdmamap_pool_entry {
 	bus_dmamap_t dmamap;
+	bus_dmamap_t dmamap32;
+	bool is_dma32;
 	SLIST_ENTRY(txdmamap_pool_entry) link;
 };
 
@@ -276,6 +278,8 @@ struct bge_softc {
 	uint32_t		bge_return_ring_cnt;
 	uint32_t		bge_tx_prodidx;
 	bus_dma_tag_t		bge_dmatag;
+	bus_dma_tag_t		bge_dmatag32;
+	bool			bge_dma64;
 	uint32_t		bge_pcixcap;
 	uint32_t		bge_pciecap;
 	uint32_t		bge_msicap;
@@ -326,6 +330,8 @@ struct bge_softc {
 	 * Event counters.
 	 */
 	struct evcnt bge_ev_intr;	/* interrupts */
+	struct evcnt bge_ev_intr_spurious;  /* spurious intr. (tagged status)*/
+	struct evcnt bge_ev_intr_spurious2; /* spurious interrupts */
 	struct evcnt bge_ev_tx_xoff;	/* send PAUSE(len>0) packets */
 	struct evcnt bge_ev_tx_xon;	/* send PAUSE(len=0) packets */
 	struct evcnt bge_ev_rx_xoff;	/* receive PAUSE(len>0) packets */
