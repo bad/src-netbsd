@@ -52,7 +52,7 @@ static void http_req(void *ctx, struct http_request *req)
 			eloop_terminate();
 		return;
 	}
-	wpabuf_put_str(resp, "User input completed");
+	wpabuf_put_str(resp, "HTTP/1.1\r\n\r\nUser input completed");
 
 	if (done) {
 		eloop_cancel_timeout(browser_timeout, NULL, NULL);
@@ -96,7 +96,8 @@ int hs20_web_browser(const char *url)
 
 	if (pid == 0) {
 		/* run the external command in the child process */
-		char *argv[12];
+		char *argv[14];
+		char *envp[] = { "PATH=/system/bin:/vendor/bin", NULL };
 
 		argv[0] = "browser-wpadebug";
 		argv[1] = "start";
@@ -109,10 +110,12 @@ int hs20_web_browser(const char *url)
 		argv[8] = "-e";
 		argv[9] = "w1.fi.wpadebug.URL";
 		argv[10] = (void *) url;
-		argv[11] = NULL;
+		argv[11] = "--user";
+		argv[12] = "-3"; /* USER_CURRENT_OR_SELF */
+		argv[13] = NULL;
 
-		execv("/system/bin/am", argv);
-		wpa_printf(MSG_ERROR, "execv: %s", strerror(errno));
+		execve("/system/bin/am", argv, envp);
+		wpa_printf(MSG_ERROR, "execve: %s", strerror(errno));
 		exit(0);
 		return -1;
 	}
