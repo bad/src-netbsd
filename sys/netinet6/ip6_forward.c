@@ -1,4 +1,4 @@
-/*	$NetBSD: ip6_forward.c,v 1.95 2018/05/01 07:21:39 maxv Exp $	*/
+/*	$NetBSD: ip6_forward.c,v 1.97 2019/09/19 04:08:29 ozaki-r Exp $	*/
 /*	$KAME: ip6_forward.c,v 1.109 2002/09/11 08:10:17 sakane Exp $	*/
 
 /*
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ip6_forward.c,v 1.95 2018/05/01 07:21:39 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ip6_forward.c,v 1.97 2019/09/19 04:08:29 ozaki-r Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_gateway.h"
@@ -197,7 +197,7 @@ ip6_forward(struct mbuf *m, int srcrt)
 	}
 #endif
 
-	ro = percpu_getref(ip6_forward_rt_percpu);
+	ro = rtcache_percpu_getref(ip6_forward_rt_percpu);
 	if (srcrt) {
 		union {
 			struct sockaddr		dst;
@@ -393,10 +393,14 @@ ip6_forward(struct mbuf *m, int srcrt)
 	 * Run through list of hooks for output packets.
 	 */
 	if ((error = pfil_run_hooks(inet6_pfil_hook, &m, rt->rt_ifp,
-	    PFIL_OUT)) != 0)
+	    PFIL_OUT)) != 0) {
+		IP6_STATINC(IP6_STAT_PFILDROP_OUT);
 		goto senderr;
-	if (m == NULL)
+	}
+	if (m == NULL) {
+		IP6_STATINC(IP6_STAT_PFILDROP_OUT);
 		goto freecopy;
+	}
 	ip6 = mtod(m, struct ip6_hdr *);
 
 	error = ip6_if_output(rt->rt_ifp, origifp, m, dst, rt);
@@ -466,7 +470,7 @@ out:
 #endif
 	rtcache_unref(rt, ro);
 	if (ro != NULL)
-		percpu_putref(ip6_forward_rt_percpu);
+		rtcache_percpu_putref(ip6_forward_rt_percpu);
 	if (rcvif != NULL)
 		m_put_rcvif_psref(rcvif, &psref);
 	return;

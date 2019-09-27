@@ -1,4 +1,4 @@
-#	$NetBSD: bsd.own.mk,v 1.1094 2019/01/09 23:52:29 mrg Exp $
+#	$NetBSD: bsd.own.mk,v 1.1152 2019/09/15 21:17:08 bad Exp $
 
 # This needs to be before bsd.init.mk
 .if defined(BSD_MK_COMPAT_FILE)
@@ -58,7 +58,7 @@ TOOLCHAIN_MISSING?=	no
 #
 # What GCC is used?
 #
-HAVE_GCC?=	6
+HAVE_GCC?=	7
 
 #
 # Platforms that can't run a modern GCC natively
@@ -72,6 +72,8 @@ MKGCCCMDS?=	no
 #
 .if ${HAVE_GCC} == 6
 EXTERNAL_GCC_SUBDIR?=	gcc.old
+.elif ${HAVE_GCC} == 7
+EXTERNAL_GCC_SUBDIR?=	gcc
 .else
 EXTERNAL_GCC_SUBDIR=?	/does/not/exist
 .endif
@@ -136,11 +138,11 @@ USE_SSP?=	yes
 #
 # What GDB is used?
 #
-HAVE_GDB?=	801
+HAVE_GDB?=	830
 
-.if ${HAVE_GDB} == 801
+.if ${HAVE_GDB} == 830
 EXTERNAL_GDB_SUBDIR=		gdb
-.elif ${HAVE_GDB} == 712
+.elif ${HAVE_GDB} == 801
 EXTERNAL_GDB_SUBDIR=		gdb.old
 .else
 EXTERNAL_GDB_SUBDIR=		/does/not/exist
@@ -158,6 +160,12 @@ EXTERNAL_BINUTILS_SUBDIR=	binutils.old
 .else
 EXTERNAL_BINUTILS_SUBDIR=	/does/not/exist
 .endif
+
+#
+# What version of jemalloc we use (100 is the one
+# built-in to libc from 2005 (pre version 3).
+#
+HAVE_JEMALLOC?=		510
 
 .if empty(.MAKEFLAGS:tW:M*-V .OBJDIR*)
 .if defined(MAKEOBJDIRPREFIX) || defined(MAKEOBJDIR)
@@ -318,10 +326,11 @@ TOOL_CXX.pcc=		${TOOLDIR}/bin/${MACHINE_GNU_PLATFORM}-p++
 #
 DESTDIR?=
 
-# Don't append another copy of sysroot (coming from COMPATCPPFLAGS etc.
+# Don't append another copy of sysroot (coming from COMPATCPPFLAGS etc.)
 # because it confuses Coverity. Still we need to cov-configure specially
 # for each specific sysroot argument.
-.if !defined(HOSTPROG) && !defined(HOSTLIB)
+# Also don't add a sysroot at all if a rumpkernel build.
+.if !defined(HOSTPROG) && !defined(HOSTLIB) && !defined(RUMPRUN)
 .  if ${DESTDIR} != ""
 .	if empty(CPPFLAGS:M*--sysroot=*)
 CPPFLAGS+=	--sysroot=${DESTDIR}
@@ -357,7 +366,7 @@ TOOL_AWK=		${TOOLDIR}/bin/${_TOOL_PREFIX}awk
 TOOL_CAP_MKDB=		${TOOLDIR}/bin/${_TOOL_PREFIX}cap_mkdb
 TOOL_CAT=		${TOOLDIR}/bin/${_TOOL_PREFIX}cat
 TOOL_CKSUM=		${TOOLDIR}/bin/${_TOOL_PREFIX}cksum
-TOOL_CLANG_TBLGEN=		${TOOLDIR}/bin/${_TOOL_PREFIX}clang-tblgen
+TOOL_CLANG_TBLGEN=	${TOOLDIR}/bin/${_TOOL_PREFIX}clang-tblgen
 TOOL_COMPILE_ET=	${TOOLDIR}/bin/${_TOOL_PREFIX}compile_et
 TOOL_CONFIG=		${TOOLDIR}/bin/${_TOOL_PREFIX}config
 TOOL_CRUNCHGEN=		MAKE=${.MAKE:Q} ${TOOLDIR}/bin/${_TOOL_PREFIX}crunchgen
@@ -366,7 +375,7 @@ TOOL_CTFCONVERT=	${TOOLDIR}/bin/${_TOOL_PREFIX}ctfconvert
 TOOL_CTFMERGE=		${TOOLDIR}/bin/${_TOOL_PREFIX}ctfmerge
 TOOL_CVSLATEST=		${TOOLDIR}/bin/${_TOOL_PREFIX}cvslatest
 TOOL_DB=		${TOOLDIR}/bin/${_TOOL_PREFIX}db
-TOOL_DISKLABEL=		${TOOLDIR}/bin/nbdisklabel
+TOOL_DISKLABEL=		${TOOLDIR}/bin/${_TOOL_PREFIX}disklabel
 TOOL_DTC=		${TOOLDIR}/bin/${_TOOL_PREFIX}dtc
 TOOL_EQN=		${TOOLDIR}/bin/${_TOOL_PREFIX}eqn
 TOOL_FDISK=		${TOOLDIR}/bin/${MACHINE_GNU_PLATFORM}-fdisk
@@ -391,7 +400,7 @@ TOOL_INDXBIB=		${TOOLDIR}/bin/${_TOOL_PREFIX}indxbib
 TOOL_INSTALLBOOT=	${TOOLDIR}/bin/${_TOOL_PREFIX}installboot
 TOOL_INSTALL_INFO=	${TOOLDIR}/bin/${_TOOL_PREFIX}install-info
 TOOL_JOIN=		${TOOLDIR}/bin/${_TOOL_PREFIX}join
-TOOL_LLVM_TBLGEN=		${TOOLDIR}/bin/${_TOOL_PREFIX}llvm-tblgen
+TOOL_LLVM_TBLGEN=	${TOOLDIR}/bin/${_TOOL_PREFIX}llvm-tblgen
 TOOL_M4=		${TOOLDIR}/bin/${_TOOL_PREFIX}m4
 TOOL_MACPPCFIXCOFF=	${TOOLDIR}/bin/${_TOOL_PREFIX}macppc-fixcoff
 TOOL_MAKEFS=		${TOOLDIR}/bin/${_TOOL_PREFIX}makefs
@@ -618,16 +627,6 @@ MACHINES.sparc64=	sparc64
 MACHINES.vax=		vax
 MACHINES.x86_64=	amd64
 
-# for crunchide & ldd, define the OBJECT_FMTS used by a MACHINE_ARCH
-#
-OBJECT_FMTS=
-.if	${MACHINE_ARCH} != "alpha" && ${MACHINE_ARCH} != "ia64"
-OBJECT_FMTS+=	elf32
-.endif
-.if	${MACHINE_ARCH} == "alpha" || ${MACHINE_ARCH:M*64*} != ""
-OBJECT_FMTS+=	elf64
-.endif
-
 # OBJCOPY flags to create a.out binaries for old firmware
 # shared among src/distrib and ${MACHINE}/conf/Makefile.${MACHINE}.inc
 .if ${MACHINE_CPU} == "arm"
@@ -809,7 +808,6 @@ NOPROFILE=	# defined
 #
 # The ia64 port is incomplete.
 #
-MKLINT.ia64=	no
 MKGDB.ia64=	no
 
 #
@@ -1056,6 +1054,7 @@ MKSTATICPIE?=	no
 _MKVARS.yes= \
 	MKATF \
 	MKBINUTILS \
+	MKBSDTAR \
 	MKCOMPLEX MKCVS MKCXX \
 	MKDOC MKDTC \
 	MKDYNAMICROOT \
@@ -1072,7 +1071,7 @@ _MKVARS.yes= \
 	MKNPF \
 	MKOBJ \
 	MKPAM MKPERFUSE \
-	MKPF MKPIC MKPICINSTALL MKPICLIB MKPOSTFIX MKPROFILE \
+	MKPF MKPIC MKPICLIB MKPOSTFIX MKPROFILE \
 	MKRUMP \
 	MKSHARE MKSKEY MKSTATICLIB \
 	MKUNBOUND \
@@ -1103,11 +1102,6 @@ USE_LIBCSANITIZER?=	undefined
 #
 # Exceptions to the above:
 #
-
-# Rump doesn't work yet on ia64
-.if ${MACHINE} == "ia64"
-MKRUMP=		no
-.endif
 
 # RUMP uses -nostdinc which coverity does not like
 # It also does not use many new files, so disable it
@@ -1149,12 +1143,31 @@ MKFIRMWARE.macppc=		yes
 MKFIRMWARE.sandpoint=		yes
 MKFIRMWARE.sparc64=		yes
 
-# Only install the radeon firmware on DRM-happy systems.
+# Only install the nouveau and radeon firmwares on DRM-happy systems.
+MKNOUVEAUFIRMWARE.x86_64=	yes
+MKNOUVEAUFIRMWARE.i386=		yes
 MKRADEONFIRMWARE.x86_64=	yes
 MKRADEONFIRMWARE.i386=		yes
 
 # Only install the tegra firmware on evbarm.
 MKTEGRAFIRMWARE.evbarm=		yes
+
+# MesaLib.old and MesaLib7 go together, and MesaLib is alone.
+HAVE_MESA_VER?=	18
+.if ${HAVE_MESA_VER} == "10"
+EXTERNAL_MESALIB_DIR?=	MesaLib.old
+.elif ${HAVE_MESA_VER} == "18"
+EXTERNAL_MESALIB_DIR?=	MesaLib
+.endif
+
+# Default to LLVM run-time if x86 or aarch64 and X11 and Mesa 18
+# XXX This knows that MKX11=no is default below, but would
+# require splitting the below loop in two parts.
+.if ${MKX11:Uno} != "no" && ${HAVE_MESA_VER} == "18"
+MKLLVMRT.amd64=		yes
+MKLLVMRT.i386=		yes
+MKLLVMRT.aarch64=	yes
+.endif
 
 #
 # MK* options which default to "no".  Note that MKZFS has a different
@@ -1163,18 +1176,18 @@ MKTEGRAFIRMWARE.evbarm=		yes
 #
 _MKVARS.no= \
 	MKARZERO \
-	MKBSDGREP MKBSDTAR \
+	MKBSDGREP \
 	MKCATPAGES MKCOMPATTESTS MKCOMPATX11 MKCTF \
 	MKDEBUG MKDEBUGLIB MKDTRACE \
 	MKEXTSRC \
 	MKFIRMWARE \
 	MKGROFFHTMLDOC \
 	MKKYUA \
-	MKLIBCXX MKLLD MKLLDB MKLLVM MKLINT \
+	MKLIBCXX MKLLD MKLLDB MKLLVM MKLLVMRT MKLINT \
 	MKMANZ MKMCLINKER \
-	MKNSD \
+	MKNOUVEAUFIRMWARE MKNSD \
 	MKOBJDIRS \
-	MKPCC MKPIGZGZIP \
+	MKPCC MKPICINSTALL MKPIGZGZIP \
 	MKRADEONFIRMWARE MKREPRO \
 	MKSLJIT MKSOFTFLOAT MKSTRIPIDENT \
 	MKTEGRAFIRMWARE MKTPM \
@@ -1233,6 +1246,8 @@ MKXORG_SERVER=yes
 
 .if ${MKCXX} == "no"
 MKATF:=		no
+MKGCCCMDS:=	no
+MKGDB:=		no
 MKGROFF:=	no
 MKKYUA:=	no
 .endif
@@ -1319,6 +1334,18 @@ INSTALL_DIR?=		${INSTALL} ${INSTPRIV} -d
 INSTALL_FILE?=		${INSTALL} ${INSTPRIV} ${COPY} ${PRESERVE} ${RENAME}
 INSTALL_LINK?=		${INSTALL} ${INSTPRIV} ${HRDLINK} ${RENAME}
 INSTALL_SYMLINK?=	${INSTALL} ${INSTPRIV} ${SYMLINK} ${RENAME}
+.endif
+
+# for crunchide & ldd, define the OBJECT_FMTS used by a MACHINE_ARCH
+#
+OBJECT_FMTS=
+.if	${MACHINE_ARCH} != "alpha" && ${MACHINE_ARCH} != "ia64"
+OBJECT_FMTS+=	elf32
+.endif
+.if	${MACHINE_ARCH} == "alpha" || ${MACHINE_ARCH:M*64*} != ""
+. if !(${MKCOMPAT:Uyes} == "no" && ${MACHINE_CPU} == "mips")
+OBJECT_FMTS+=	elf64
+. endif
 .endif
 
 #
@@ -1419,7 +1446,7 @@ X11SRCDIRMIT?=		${X11SRCDIR}/external/mit
 	FS ICE SM X11 XScrnSaver XTrap Xau Xcomposite Xcursor Xdamage \
 	Xdmcp Xevie Xext Xfixes Xfont Xfont2 Xft Xi Xinerama Xmu Xpresent Xpm \
 	Xrandr Xrender Xres Xt Xtst Xv XvMC Xxf86dga Xxf86misc Xxf86vm drm \
-	epoxy fontenc xkbfile xkbui Xaw pciaccess xcb xshmfence \
+	epoxy fontenc vdpau xkbfile xkbui Xaw pciaccess xcb xshmfence \
 	pthread-stubs
 X11SRCDIR.${_lib}?=		${X11SRCDIRMIT}/lib${_lib}/dist
 .endfor
@@ -1451,7 +1478,7 @@ HAVE_XORG_SERVER_VER?=120
 
 .if ${HAVE_XORG_SERVER_VER} == "120"
 XORG_SERVER_SUBDIR?=xorg-server
-. if ${MACHINE} == "amd64" || ${MACHINE} == "i386"
+. if ${MACHINE} == "amd64" || ${MACHINE} == "i386" || ${MACHINE} == "evbarm"
 HAVE_XORG_GLAMOR?=	yes
 . endif
 .else
@@ -1468,10 +1495,11 @@ HAVE_XORG_GLAMOR?=	no
 	xorg-cf-files imake xbiff xkeyboard-config \
 	xbitmaps appres xeyes xev xedit sessreg pixman \
 	beforelight bitmap editres makedepend fonttosfnt fslsfonts fstobdf \
-	glu glw mesa-demos MesaGLUT MesaLib MesaLib7 \
+	glu glw mesa-demos MesaGLUT MesaLib MesaLib.old MesaLib7 \
 	ico iceauth listres lndir \
 	luit xproxymanagementprotocol mkfontdir oclock proxymngr rgb \
-	rstart setxkbmap showfont smproxy twm viewres \
+	rstart setxkbmap showfont smproxy transset twm viewres \
+	util-macros \
 	x11perf xauth xcalc xclipboard \
 	xclock xcmsdb xconsole xditview xdpyinfo xdriinfo xdm \
 	xfd xf86dga xfindproxy xfontsel xfwp xgamma xgc xhost xinit \
@@ -1493,6 +1521,9 @@ HAVE_XORG_GLAMOR?=	no
 X11SRCDIR.${_dir}?=		${X11SRCDIRMIT}/${_dir}/dist
 .endfor
 
+# X11SRCDIR.Mesa points to the currently used Mesa sources
+X11SRCDIR.Mesa?=		${X11SRCDIRMIT}/${EXTERNAL_MESALIB_DIR}/dist
+
 .for _i in \
 	elographics keyboard mouse synaptics vmmouse void ws
 X11SRCDIR.xf86-input-${_i}?=	${X11SRCDIRMIT}/xf86-input-${_i}/dist
@@ -1508,7 +1539,7 @@ EXTRA_DRIVERS=	modesetting
 
 .for _v in \
 	ag10e amdgpu apm ark ast ati ati-kms chips cirrus crime \
-	geode glint i128 i740 igs imstt intel intel-old \
+	geode glint i128 i740 igs imstt intel intel-old intel-2014 \
 	${EXTRA_DRIVERS} mach64 mga \
 	neomagic newport nouveau nsc nv openchrome pnozz \
 	r128 rendition \

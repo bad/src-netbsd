@@ -1,4 +1,4 @@
-/*	$NetBSD: if_muereg.h,v 1.4 2018/12/11 13:35:02 rin Exp $	*/
+/*	$NetBSD: if_muereg.h,v 1.6 2019/08/15 08:02:32 mrg Exp $	*/
 /*	$OpenBSD: if_muereg.h,v 1.1 2018/08/03 01:50:15 kevlo Exp $	*/
 
 /*
@@ -24,8 +24,10 @@
 #include <net/if_ether.h>
 
 /* XXX for IP_MAXPACKET */
+#include <netinet/in.h>
 #include <netinet/ip.h>
-
+/* XXX for struct ip6_hdr */
+#include <netinet/ip6.h>
 /* XXX for struct mue_txbuf_hdr */
 #include <dev/usb/if_muevar.h>
 
@@ -34,6 +36,7 @@
 #define MUE_UR_READREG		0xa1
 
 /* registers */
+#define MUE_ID_REV			0x000
 #define MUE_INT_STATUS			0x00c
 #define MUE_HW_CFG			0x010
 #define MUE_PMT_CTL			0x014
@@ -80,6 +83,10 @@
 #define MUE_7800_ADDR_FILTX_BASE	0x400
 #define MUE_7800_ADDR_FILTX(i)		(MUE_7800_ADDR_FILTX_BASE + 8 * (i))
 #define MUE_NUM_ADDR_FILTX		33
+
+/* device ID and revision register */
+#define MUE_ID_REV_ID		__BITS(16,31)
+#define MUE_ID_REV_REV		__BITS(0,15)
 
 /* hardware configuration register */
 #define MUE_HW_CFG_SRST		0x00000001

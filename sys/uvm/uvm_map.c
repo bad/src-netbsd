@@ -1,4 +1,4 @@
-/*	$NetBSD: uvm_map.c,v 1.357 2018/12/17 06:53:01 kamil Exp $	*/
+/*	$NetBSD: uvm_map.c,v 1.364 2019/08/10 01:06:45 mrg Exp $	*/
 
 /*
  * Copyright (c) 1997 Charles D. Cranor and Washington University.
@@ -66,7 +66,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uvm_map.c,v 1.357 2018/12/17 06:53:01 kamil Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uvm_map.c,v 1.364 2019/08/10 01:06:45 mrg Exp $");
 
 #include "opt_ddb.h"
 #include "opt_pax.h"
@@ -3098,7 +3098,7 @@ uvm_map_protect(struct vm_map *map, vaddr_t start, vaddr_t end,
 			/* update pmap! */
 			uvm_map_lock_entry(current);
 			pmap_protect(map->pmap, current->start, current->end,
-			    current->protection & MASK(entry));
+			    current->protection & MASK(current));
 			uvm_map_unlock_entry(current);
 
 			/*
@@ -3124,11 +3124,22 @@ uvm_map_protect(struct vm_map *map, vaddr_t start, vaddr_t end,
 		 */
 
 		if ((map->flags & VM_MAP_WIREFUTURE) != 0 &&
-		    VM_MAPENT_ISWIRED(entry) == 0 &&
+		    VM_MAPENT_ISWIRED(current) == 0 &&
 		    old_prot == VM_PROT_NONE &&
 		    new_prot != VM_PROT_NONE) {
-			if (uvm_map_pageable(map, entry->start,
-			    entry->end, false,
+
+			/*
+			 * We must call pmap_update() here because the
+			 * pmap_protect() call above might have removed some
+			 * pmap entries and uvm_map_pageable() might create
+			 * some new pmap entries that rely on the prior
+			 * removals being completely finished.
+			 */
+
+			pmap_update(map->pmap);
+
+			if (uvm_map_pageable(map, current->start,
+			    current->end, false,
 			    UVM_LK_ENTER|UVM_LK_EXIT) != 0) {
 
 				/*
@@ -3358,6 +3369,14 @@ uvm_map_pageable(struct vm_map *map, vaddr_t start, vaddr_t end,
 		return EFAULT;
 	}
 	entry = start_entry;
+
+	if (start == end) {		/* nothing required */
+		if ((lockflags & UVM_LK_EXIT) == 0)
+			vm_map_unlock(map);
+
+		UVMHIST_LOG(maphist,"<- done (nothing)",0,0,0,0);
+		return 0;
+	}
 
 	/*
 	 * handle wiring and unwiring separately.
@@ -4427,9 +4446,11 @@ uvm_mapent_forkcopy(struct vm_map *new_map, struct vm_map *old_map,
 		if (old_entry->aref.ar_amap &&
 		    !UVM_ET_ISNEEDSCOPY(old_entry)) {
 			if (old_entry->max_protection & VM_PROT_WRITE) {
+				uvm_map_lock_entry(old_entry);
 				pmap_protect(old_map->pmap,
 				    old_entry->start, old_entry->end,
 				    old_entry->protection & ~VM_PROT_WRITE);
+				uvm_map_unlock_entry(old_entry);
 			}
 			old_entry->etype |= UVM_ET_NEEDSCOPY;
 		}
@@ -4709,7 +4730,9 @@ uvm_unmap1(struct vm_map *map, vaddr_t start, vaddr_t end, int flags)
 	struct vm_map_entry *dead_entries;
 	UVMHIST_FUNC("uvm_unmap"); UVMHIST_CALLED(maphist);
 
-	KASSERT(start < end);
+	KASSERTMSG(start < end,
+	    "%s: map %p: start %#jx < end %#jx", __func__, map,
+	    (uintmax_t)start, (uintmax_t)end);
 	UVMHIST_LOG(maphist, "  (map=%#jx, start=%#jx, end=%#jx)",
 	    (uintptr_t)map, start, end, 0);
 	if (map == kernel_map) {
@@ -4927,7 +4950,7 @@ fill_vmentry(struct lwp *l, struct proc *p, struct kinfo_vmentry *kve,
 	kve->kve_offset = e->offset;
 	kve->kve_wired_count = e->wired_count;
 	kve->kve_inheritance = e->inheritance;
-	kve->kve_attributes = e->map_attrib;
+	kve->kve_attributes = 0; /* unused */
 	kve->kve_advice = e->advice;
 #define PROT(p) (((p) & VM_PROT_READ) ? KVME_PROT_READ : 0) | \
 	(((p) & VM_PROT_WRITE) ? KVME_PROT_WRITE : 0) | \

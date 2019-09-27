@@ -1,4 +1,4 @@
-/*	$NetBSD: sockio.h,v 1.36 2018/12/21 08:58:08 msaitoh Exp $	*/
+/*	$NetBSD: sockio.h,v 1.38 2019/07/04 02:44:25 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 1982, 1986, 1990, 1993, 1994
@@ -90,8 +90,8 @@
 #define	SIOCGETVIFCNT	_IOWR('u', 51, struct sioc_vif_req)/* vif pkt cnt */
 #define	SIOCGETSGCNT	_IOWR('u', 52, struct sioc_sg_req) /* sg pkt cnt */
 
-#define	SIOCSIFMEDIA	_IOWR('i', 53, struct ifreq)	/* set net media */
-#define	SIOCGIFMEDIA	_IOWR('i', 54, struct ifmediareq) /* get net media */
+#define	SIOCSIFMEDIA	_IOWR('i', 55, struct ifreq)	/* set net media */
+#define	SIOCGIFMEDIA	_IOWR('i', 56, struct ifmediareq) /* get net media */
 
 #define	SIOCSIFGENERIC	 _IOW('i', 57, struct ifreq)	/* generic IF set op */
 #define	SIOCGIFGENERIC	_IOWR('i', 58, struct ifreq)	/* generic IF get op */
@@ -142,6 +142,9 @@
 #define	SIOCGETHERCAP	_IOWR('i', 139, struct eccapreq) /* get ethercap */
 #define SIOCGIFINDEX  _IOWR('i', 140, struct ifreq)   /* get ifnet index */
 #define	SIOCSETHERCAP    _IOW('i', 141, struct eccapreq) /* set ethercap */
+
+#define SIOCSIFDESCR	_IOW('i', 142, struct ifreq)	/* set interface description */
+#define SIOCGIFDESCR	_IOWR('i', 143, struct ifreq)	/* get interface description */
 
 #define SIOCGUMBINFO	_IOWR('i', 190, struct ifreq)	/* get MBIM info */
 #define SIOCSUMBPARAM	_IOW('i', 191, struct ifreq)	/* set MBIM param */

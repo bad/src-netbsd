@@ -90,7 +90,9 @@ table			return TABLE;
 type			return TYPE;
 hash			return HASH;
 tree			return TREE;
+lpm			return LPM;
 cdb			return CDB;
+const			return CONST;
 static			return TSTATIC;
 dynamic			return TDYNAMIC;
 file			return TFILE;
@@ -101,6 +103,10 @@ set			return SET;
 "<-"			return ARROWLEFT;
 "->"			return ARROWRIGHT;
 algo			return ALGO;
+netmap			return NETMAP;
+ipset			return IPSET;
+"ip-hash"		return IPHASH;
+"round-robin"		return ROUNDROBIN;
 npt66			return NPT66;
 "-"			return MINUS;
 procedure		return PROCEDURE;
@@ -119,13 +125,12 @@ block			return BLOCK;
 pass			return PASS;
 pcap-filter		return PCAP_FILTER;
 stateful		return STATEFUL;
-stateful-ends		return STATEFUL_ENDS;
+stateful-all		return STATEFUL_ALL;
 apply			return APPLY;
 final			return FINAL;
 quick			return FINAL;
 on			return ON;
 off			return OFF;
-bpf.jit			return BPFJIT;
 inet6			return INET6;
 inet4			return INET4;
 ifaddrs			return IFADDRS;
@@ -201,6 +206,11 @@ any			return ANY;
 "$"{ID}		{
 			yylval.str = estrndup(yytext + 1, yyleng - 1);
 			return VAR_ID;
+		}
+
+[a-z]*"."[a-z.]* {
+			yylval.str = estrndup(yytext, yyleng);
+			return PARAM;
 		}
 
 {ID}		{

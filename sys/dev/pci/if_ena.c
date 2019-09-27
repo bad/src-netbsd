@@ -31,7 +31,7 @@
 #if 0
 __FBSDID("$FreeBSD: head/sys/dev/ena/ena.c 333456 2018-05-10 09:37:54Z mw $");
 #endif
-__KERNEL_RCSID(0, "$NetBSD: if_ena.c,v 1.12 2018/12/22 20:57:44 roy Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ena.c,v 1.16 2019/08/01 13:43:28 msaitoh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -50,8 +50,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_ena.c,v 1.12 2018/12/22 20:57:44 roy Exp $");
 #include <sys/callout.h>
 #include <sys/interrupt.h>
 #include <sys/cpu.h>
-
-#include <sys/bus.h>
 
 #include <net/if_ether.h>
 #include <net/if_vlanvar.h>
@@ -275,15 +273,57 @@ static int
 ena_allocate_pci_resources(struct pci_attach_args *pa,
     struct ena_adapter *adapter)
 {
-	bus_size_t size;
+	pcireg_t memtype, reg;
+	bus_addr_t memaddr;
+	bus_size_t mapsize;
+	int flags, error;
+	int msixoff;
 
-	/*
-	 * Map control/status registers.
-	*/
-	pcireg_t memtype = pci_mapreg_type(pa->pa_pc, pa->pa_tag, ENA_REG_BAR);
-	if (pci_mapreg_map(pa, ENA_REG_BAR, memtype, 0, &adapter->sc_btag,
-	    &adapter->sc_bhandle, NULL, &size)) {
-		aprint_error(": can't map mem space\n");
+	memtype = pci_mapreg_type(pa->pa_pc, pa->pa_tag, ENA_REG_BAR);
+	if (PCI_MAPREG_TYPE(memtype) != PCI_MAPREG_TYPE_MEM) {
+		aprint_error_dev(adapter->pdev, "invalid type (type=0x%x)\n",
+		    memtype);
+		return ENXIO;
+	}
+	reg = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
+	if (((reg & PCI_COMMAND_MASTER_ENABLE) == 0) ||
+	    ((reg & PCI_COMMAND_MEM_ENABLE) == 0)) {
+		/*
+		 * Enable address decoding for memory range in case BIOS or
+		 * UEFI didn't set it.
+		 */
+		reg |= PCI_COMMAND_MASTER_ENABLE | PCI_COMMAND_MEM_ENABLE;
+        	pci_conf_write(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG,
+		    reg);
+	}
+
+	adapter->sc_btag = pa->pa_memt;
+	error = pci_mapreg_info(pa->pa_pc, pa->pa_tag, ENA_REG_BAR,
+	    memtype, &memaddr, &mapsize, &flags);
+	if (error) {
+		aprint_error_dev(adapter->pdev, "can't get map info\n");
+		return ENXIO;
+	}
+
+	if (pci_get_capability(pa->pa_pc, pa->pa_tag, PCI_CAP_MSIX, &msixoff,
+	    NULL)) {
+		pcireg_t msixtbl;
+		uint32_t table_offset;
+		int bir;
+
+		msixtbl = pci_conf_read(pa->pa_pc, pa->pa_tag,
+		    msixoff + PCI_MSIX_TBLOFFSET);
+		table_offset = msixtbl & PCI_MSIX_TBLOFFSET_MASK;
+		bir = msixtbl & PCI_MSIX_PBABIR_MASK;
+		if (bir == PCI_MAPREG_NUM(ENA_REG_BAR))
+			mapsize = table_offset;
+	}
+
+	error = bus_space_map(adapter->sc_btag, memaddr, mapsize, flags,
+	    &adapter->sc_bhandle);
+	if (error != 0) {
+		aprint_error_dev(adapter->pdev,
+		    "can't map mem space (error=%d)\n", error);
 		return ENXIO;
 	}
 
@@ -2045,7 +2085,9 @@ err:
 	kcpuset_destroy(affinity);
 
 	for (i--; i >= 0; i--) {
+#if defined(DEBUG) || defined(DIAGNOSTIC)
 		int irq_slot = i + irq_off;
+#endif
 		KASSERT(adapter->sc_ihs[irq_slot] != NULL);
 		pci_intr_disestablish(adapter->sc_pa.pa_pc, adapter->sc_ihs[i]);
 		adapter->sc_ihs[i] = NULL;
@@ -2371,11 +2413,6 @@ ena_ioctl(struct ifnet *ifp, u_long command, void *data)
 	case SIOCDELMULTI:
 		break;
 
-	case SIOCSIFMEDIA:
-	case SIOCGIFMEDIA:
-		rc = ifmedia_ioctl(ifp, ifr, &adapter->media, command);
-		break;
-
 	case SIOCSIFCAP:
 		{
 			struct ifcapreq *ifcr = data;
@@ -2542,6 +2579,7 @@ ena_setup_ifnet(device_t pdev, struct ena_adapter *adapter,
 	 * Specify the media types supported by this adapter and register
 	 * callbacks to update media and link information
 	 */
+	adapter->sc_ec.ec_ifmedia = &adapter->media;
 	ifmedia_init(&adapter->media, IFM_IMASK,
 	    ena_media_change, ena_media_status);
 	ifmedia_add(&adapter->media, IFM_ETHER | IFM_AUTO, 0, NULL);

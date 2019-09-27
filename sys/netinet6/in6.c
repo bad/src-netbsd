@@ -1,4 +1,4 @@
-/*	$NetBSD: in6.c,v 1.272 2018/11/29 09:54:23 ozaki-r Exp $	*/
+/*	$NetBSD: in6.c,v 1.276 2019/09/25 09:53:38 ozaki-r Exp $	*/
 /*	$KAME: in6.c,v 1.198 2001/07/18 09:12:38 itojun Exp $	*/
 
 /*
@@ -62,7 +62,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: in6.c,v 1.272 2018/11/29 09:54:23 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: in6.c,v 1.276 2019/09/25 09:53:38 ozaki-r Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -179,7 +179,7 @@ in6_ifaddlocal(struct ifaddr *ifa)
 	    (ifa->ifa_ifp->if_flags & IFF_POINTOPOINT &&
 	    IN6_ARE_ADDR_EQUAL(IFA_IN6(ifa), IFA_DSTIN6(ifa))))
 	{
-		rt_newaddrmsg(RTM_NEWADDR, ifa, 0, NULL);
+		rt_addrmsg(RTM_NEWADDR, ifa);
 		return;
 	}
 
@@ -531,10 +531,11 @@ in6_control1(struct socket *so, u_long cmd, void *data, struct ifnet *ifp)
 			error = EADDRNOTAVAIL;
 			goto out;
 		}
-		/* FALLTHROUGH */
 #ifdef OSIOCAIFADDR_IN6
+		/* FALLTHROUGH */
 	case OSIOCAIFADDR_IN6:
 #endif
+		/* FALLTHROUGH */
 	case SIOCAIFADDR_IN6:
 		/*
 		 * We always require users to specify a valid IPv6 address for
@@ -674,8 +675,8 @@ in6_control1(struct socket *so, u_long cmd, void *data, struct ifnet *ifp)
 #ifdef OSIOCAIFADDR_IN6
 	case OSIOCAIFADDR_IN6:
 		in6_aliasreq50_to_in6_aliasreq(ifra);
-		/*FALLTHROUGH*/
 #endif
+		/*FALLTHROUGH*/
 	case SIOCAIFADDR_IN6:
 	{
 		struct in6_addrlifetime *lt;
@@ -1436,7 +1437,9 @@ in6_purgeaddr(struct ifaddr *ifa)
 	mutex_enter(&in6_ifaddr_lock);
 	while ((imm = LIST_FIRST(&ia->ia6_memberships)) != NULL) {
 		struct in6_multi *in6m __diagused = imm->i6mm_maddr;
-		KASSERT(in6m == NULL || in6m->in6m_ifp == ifp);
+		KASSERTMSG(in6m == NULL || in6m->in6m_ifp == ifp,
+		    "in6m_ifp=%s ifp=%s", in6m ? in6m->in6m_ifp->if_xname : NULL,
+		    ifp->if_xname);
 		LIST_REMOVE(imm, i6mm_chain);
 		mutex_exit(&in6_ifaddr_lock);
 
@@ -1839,7 +1842,7 @@ in6_ifinit(struct ifnet *ifp, struct in6_ifaddr *ia,
 		in6_ifaddlocal(&ia->ia_ifa);
 	} else {
 		/* Inform the routing socket of new flags/timings */
-		rt_newaddrmsg(RTM_NEWADDR, &ia->ia_ifa, 0, NULL);
+		rt_addrmsg(RTM_NEWADDR, &ia->ia_ifa);
 	}
 
 	/* Add the network prefix route. */
@@ -2210,7 +2213,7 @@ in6_if_link_up(struct ifnet *ifp)
 				    IN6_PRINT(ip6buf,
 				    &ia->ia_addr.sin6_addr));
 			} else if ((ia->ia6_flags & IN6_IFF_TENTATIVE) == 0)
-				rt_newaddrmsg(RTM_NEWADDR, ifa, 0, NULL);
+				rt_addrmsg(RTM_NEWADDR, ifa);
 		}
 
 		if (ia->ia6_flags & IN6_IFF_TENTATIVE) {
@@ -2301,7 +2304,7 @@ in6_if_link_down(struct ifnet *ifp)
 			ia->ia6_flags |= IN6_IFF_DETACHED;
 			ia->ia6_flags &=
 			    ~(IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED);
-			rt_newaddrmsg(RTM_NEWADDR, ifa, 0, NULL);
+			rt_addrmsg(RTM_NEWADDR, ifa);
 		}
 
 		s = pserialize_read_enter();
@@ -2370,7 +2373,7 @@ in6_tunnel_validate(const struct ip6_hdr *ip6, const struct in6_addr *src,
 
 	/* martian filters on outer source - done in ip6_input */
 
-	/* NOTE: the pakcet may be dropped by uRPF. */
+	/* NOTE: the packet may be dropped by uRPF. */
 
 	/* return valid bytes length */
 	return sizeof(*src) + sizeof(*dst);
@@ -2431,7 +2434,7 @@ static void
 in6_lltable_destroy_lle(struct llentry *lle)
 {
 
-	KASSERT(lle->la_numheld == 0);
+	KASSERTMSG(lle->la_numheld == 0, "la_numheld=%d", lle->la_numheld);
 
 	LLE_WUNLOCK(lle);
 	LLE_LOCK_DESTROY(lle);

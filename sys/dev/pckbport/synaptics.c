@@ -1,4 +1,4 @@
-/*	$NetBSD: synaptics.c,v 1.46 2018/12/04 10:10:15 blymn Exp $	*/
+/*	$NetBSD: synaptics.c,v 1.50 2019/07/05 05:09:24 mlelstv Exp $	*/
 
 /*
  * Copyright (c) 2005, Steve C. Woodford
@@ -48,7 +48,7 @@
 #include "opt_pms.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: synaptics.c,v 1.46 2018/12/04 10:10:15 blymn Exp $");
+__KERNEL_RCSID(0, "$NetBSD: synaptics.c,v 1.50 2019/07/05 05:09:24 mlelstv Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -297,27 +297,33 @@ pms_synaptics_probe_extended(struct pms_softc *psc)
  *					for noise.
  * 1	0x08	image sensor		image sensor tracks 5 fingers, but only
  *					reports 2.
- * 1	0x01	uniform clickpad	whole clickpad moves instead of being
+ * 1	0x10	uniform clickpad	whole clickpad moves instead of being
  *					hinged at the top.
  * 1	0x20	report min		query 0x0f gives min coord reported
  */
 		if (res == 0) {
-			u_char clickpad_type = (resp[0] & 0x10);
-			clickpad_type |=       (resp[1] & 0x01);
+			uint val = SYN_CCAP_VALUE(resp);
 
 			aprint_debug_dev(psc->sc_dev, "%s: Continued "
 			    "Capabilities 0x%02x 0x%02x 0x%02x.\n", __func__,
 			    resp[0], resp[1], resp[2]);
-			switch (clickpad_type) {
-			case 0x10:
+			switch (SYN_CCAP_CLICKPAD_TYPE(val)) {
+			case 0: /* not a clickpad */
+				break;
+			case 1:
 				sc->flags |= SYN_FLAG_HAS_ONE_BUTTON_CLICKPAD;
 				break;
-			case 0x01:
+			case 2:
 				sc->flags |= SYN_FLAG_HAS_TWO_BUTTON_CLICKPAD;
 				break;
+			case 3: /* reserved */
 			default:
+				/* unreached */
 				break;
 			}
+
+			if ((val & SYN_CCAP_HAS_ADV_GESTURE_MODE))
+				sc->flags |= SYN_FLAG_HAS_ADV_GESTURE_MODE;
 		}
 	}
 }
@@ -395,7 +401,7 @@ pms_synaptics_probe_init(void *vsc)
 		goto doreset;
 	}
 
-	sc->caps = (resp[0] << 8) | resp[2];
+	sc->caps = SYNAPTICS_CAP_VALUE(resp);
 
 	if (sc->caps & SYNAPTICS_CAP_MBUTTON)
 		sc->flags |= SYN_FLAG_HAS_MIDDLE_BUTTON;
@@ -474,7 +480,8 @@ pms_synaptics_enable(void *vsc)
 		synaptics_poll_cmd(psc, PMS_SET_SCALE11, 0);
 
 	/* Set advanced gesture mode */
-	if (sc->flags & SYN_FLAG_HAS_EXTENDED_WMODE)
+	if ((sc->flags & SYN_FLAG_HAS_EXTENDED_WMODE) ||
+	    (sc->flags & SYN_FLAG_HAS_ADV_GESTURE_MODE))
 		synaptics_special_write(psc, SYNAPTICS_WRITE_DELUXE_3, 0x3); 
 
 	synaptics_poll_cmd(psc, PMS_DEV_ENABLE, 0);
@@ -987,9 +994,33 @@ pms_synaptics_parse(struct pms_softc *psc)
 		/* Pressure */
 		sp.sp_z = psc->packet[2];
 
-		/* Left/Right button handling. */
-		sp.sp_left = psc->packet[0] & PMS_LBUTMASK;
-		sp.sp_right = psc->packet[0] & PMS_RBUTMASK;
+		if ((psc->packet[0] ^ psc->packet[3]) & 0x02) {
+			/* extended buttons */
+
+			aprint_debug_dev(psc->sc_dev,
+			    "synaptics_parse: %02x %02x %02x %02x %02x %02x\n",
+			    psc->packet[0], psc->packet[1], psc->packet[2],
+			    psc->packet[3], psc->packet[4], psc->packet[5]);
+
+			if ((psc->packet[4] & SYN_1BUTMASK) != 0)
+				sp.sp_left = PMS_LBUTMASK;
+
+			if ((psc->packet[4] & SYN_3BUTMASK) != 0)
+				sp.sp_middle = PMS_MBUTMASK;
+
+			if ((psc->packet[5] & SYN_2BUTMASK) != 0)
+				sp.sp_right = PMS_RBUTMASK;
+
+			if ((psc->packet[5] & SYN_4BUTMASK) != 0)
+				sp.sp_up = 1;
+
+			if ((psc->packet[4] & SYN_5BUTMASK) != 0)
+				sp.sp_down = 1;
+		} else {
+			/* Left/Right button handling. */
+			sp.sp_left = psc->packet[0] & PMS_LBUTMASK;
+			sp.sp_right = psc->packet[0] & PMS_RBUTMASK;
+		}
 
 		/* Up/Down buttons. */
 		if (sc->flags & SYN_FLAG_HAS_BUTTONS_4_5) {
@@ -1123,7 +1154,7 @@ pms_synaptics_input(void *vsc, int data)
 
 	getmicrouptime(&psc->current);
 
-	if (psc->inputstate > 0) {
+	if (psc->inputstate != 0) {
 		timersub(&psc->current, &psc->last, &diff);
 		if (diff.tv_sec > 0 || diff.tv_usec >= 40000) {
 			aprint_debug_dev(psc->sc_dev,
@@ -1142,14 +1173,23 @@ pms_synaptics_input(void *vsc, int data)
 	psc->last = psc->current;
 
 	switch (psc->inputstate) {
+	case -5:
+	case -4:
+	case -3:
+	case -2:
+	case -1:
 	case 0:
 		if ((data & 0xc8) != 0x80) {
 			aprint_debug_dev(psc->sc_dev,
 			    "pms_input: 0x%02x out of sync\n", data);
+			/* use negative counts to limit resync phase */
+			psc->inputstate--;
 			return;	/* not in sync yet, discard input */
 		}
+		psc->inputstate = 0;
 		/*FALLTHROUGH*/
 
+	case -6:
 	case 3:
 		if ((data & 8) == 8) {
 			aprint_debug_dev(psc->sc_dev,

@@ -1,4 +1,4 @@
-/*	$NetBSD: ata.c,v 1.147 2018/12/11 23:06:30 jdolecek Exp $	*/
+/*	$NetBSD: ata.c,v 1.150 2019/08/21 04:51:41 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001 Manuel Bouyer.  All rights reserved.
@@ -25,7 +25,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ata.c,v 1.147 2018/12/11 23:06:30 jdolecek Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ata.c,v 1.150 2019/08/21 04:51:41 msaitoh Exp $");
 
 #include "opt_ata.h"
 
@@ -1278,17 +1278,8 @@ ata_activate_xfer_locked(struct ata_channel *chp, struct ata_xfer *xfer)
 struct ata_xfer *
 ata_get_xfer(struct ata_channel *chp, bool waitok)
 {
-	struct ata_xfer *xfer;
-
-	xfer = pool_get(&ata_xfer_pool, waitok ? PR_WAITOK : PR_NOWAIT);
-	KASSERT(!waitok || xfer != NULL);
-
-	if (xfer != NULL) {
-		/* zero everything */
-		memset(xfer, 0, sizeof(*xfer));
-	}
-
-	return xfer;
+	return pool_get(&ata_xfer_pool,
+	    PR_ZERO | (waitok ? PR_WAITOK : PR_NOWAIT));
 }
 
 /*
@@ -2040,6 +2031,8 @@ ata_probe_caps(struct ata_drive_datas *drvp)
 #if NATA_DMA
 	if ((atac->atac_cap & ATAC_CAP_DMA) == 0) {
 		/* don't care about DMA modes */
+		if (*sep != '\0')
+			aprint_verbose("\n");
 		return;
 	}
 	if (cf_flags & ATA_CONFIG_DMA_SET) {
@@ -2086,7 +2079,7 @@ ata_probe_caps(struct ata_drive_datas *drvp)
 	}
 	ata_channel_unlock(chp);
 
-	if (printed)
+	if (*sep != '\0')
 		aprint_verbose("\n");
 
 #if NATA_UDMA
@@ -2239,7 +2232,7 @@ atabus_resume(device_t dv, const pmf_qual_t *qual)
 	struct ata_channel *chp = sc->sc_chan;
 
 	/*
-	 * XXX joerg: with wdc, the first channel unfreezes the controler.
+	 * XXX joerg: with wdc, the first channel unfreezes the controller.
 	 * Move this the reset and queue idling into wdc.
 	 */
 	ata_channel_lock(chp);

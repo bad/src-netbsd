@@ -1,4 +1,4 @@
-/* $NetBSD: ixgbe_type.h,v 1.37 2018/12/06 13:25:02 msaitoh Exp $ */
+/* $NetBSD: ixgbe_type.h,v 1.43 2019/09/20 09:28:37 msaitoh Exp $ */
 
 /******************************************************************************
   SPDX-License-Identifier: BSD-3-Clause
@@ -210,6 +210,10 @@
 #define IXGBE_FLA_X550EM_x	IXGBE_FLA
 #define IXGBE_FLA_X550EM_a	0x15F68
 #define IXGBE_FLA_BY_MAC(_hw)	IXGBE_BY_MAC((_hw), FLA)
+#define IXGBE_FLA_FL_SIZE_SHIFT_X540	17
+#define IXGBE_FLA_FL_SIZE_SHIFT_X550	12
+#define IXGBE_FLA_FL_SIZE_MASK_X540	(0x7 << IXGBE_FLA_FL_SIZE_SHIFT_X540)
+#define IXGBE_FLA_FL_SIZE_MASK_X550	(0x7 << IXGBE_FLA_FL_SIZE_SHIFT_X550)
 
 #define IXGBE_EEMNGCTL	0x10110
 #define IXGBE_EEMNGDATA	0x10114
@@ -877,6 +881,10 @@ struct ixgbe_dmac_config {
 #define IXGBE_RTTDQSEL		0x04904
 #define IXGBE_RTTDT1C		0x04908
 #define IXGBE_RTTDT1S		0x0490C
+#define IXGBE_RTTQCNCR		0x08B00
+#define IXGBE_RTTQCNTG		0x04A90
+#define IXGBE_RTTBCNRD		0x0498C
+#define IXGBE_RTTQCNRR		0x0498C
 #define IXGBE_RTTDTECC		0x04990
 #define IXGBE_RTTDTECC_NO_BCN	0x00000100
 
@@ -887,6 +895,7 @@ struct ixgbe_dmac_config {
 #define IXGBE_RTTBCNRC_RF_INT_MASK \
 	(IXGBE_RTTBCNRC_RF_DEC_MASK << IXGBE_RTTBCNRC_RF_INT_SHIFT)
 #define IXGBE_RTTBCNRM	0x04980
+#define IXGBE_RTTQCNRM	0x04980
 
 /* BCN (for DCB) Registers */
 #define IXGBE_RTTBCNRS	0x04988
@@ -1443,6 +1452,7 @@ struct ixgbe_dmac_config {
 #define IXGBE_BARCTRL_FLSIZE		0x0700
 #define IXGBE_BARCTRL_FLSIZE_SHIFT	8
 #define IXGBE_BARCTRL_CSRSIZE		0x2000
+#define IXGBE_BARCTRL_CSRSIZE_SHIFT	13
 
 /* RSCCTL Bit Masks */
 #define IXGBE_RSCCTL_RSCEN	0x01
@@ -3852,6 +3862,21 @@ struct ixgbe_fc_info {
 	enum ixgbe_fc_mode requested_mode; /* FC mode requested by caller */
 };
 
+/*
+ * NetBSD currently uses traffic class 0 only. Other traffic classes aren't
+ * used yet. When IXGBE_TC_COUNTER_NUM is set to lower than
+ * IXGBE_DCB_MAX_TRAFFIC_CLASS (e.g. 1), other traffic classes' counters are
+ * not used. It means we don't generate evcnt for them and don't add the values
+ * in ixgbe_update_stats_counters().
+ */
+#if !defined(IXGBE_TC_COUNTER_NUM)
+#define IXGBE_TC_COUNTER_NUM IXGBE_DCB_MAX_TRAFFIC_CLASS
+#endif
+#if ((IXGBE_TC_COUNTER_NUM < 1)					\
+    || (IXGBE_TC_COUNTER_NUM > IXGBE_DCB_MAX_TRAFFIC_CLASS))
+#error Wrong IXGBE_TC_COUNTER_NUM value
+#endif
+
 /* Statistics counters collected by the MAC */
 struct ixgbe_hw_stats {
 	char namebuf[32];
@@ -3866,7 +3891,7 @@ struct ixgbe_hw_stats {
 	struct evcnt mspdc;
 	struct evcnt mbsdc;
 	struct evcnt mpctotal;
-	struct evcnt mpc[8];
+	struct evcnt mpc[IXGBE_TC_COUNTER_NUM];
 	struct evcnt mlfc;
 	struct evcnt mrfc;
 	struct evcnt rlec;
@@ -3874,10 +3899,10 @@ struct ixgbe_hw_stats {
 	struct evcnt lxonrxc;
 	struct evcnt lxofftxc;
 	struct evcnt lxoffrxc;
-	struct evcnt pxontxc[8];
-	struct evcnt pxonrxc[8];
-	struct evcnt pxofftxc[8];
-	struct evcnt pxoffrxc[8];
+	struct evcnt pxontxc[IXGBE_TC_COUNTER_NUM];
+	struct evcnt pxonrxc[IXGBE_TC_COUNTER_NUM];
+	struct evcnt pxofftxc[IXGBE_TC_COUNTER_NUM];
+	struct evcnt pxoffrxc[IXGBE_TC_COUNTER_NUM];
 	struct evcnt prc64;
 	struct evcnt prc127;
 	struct evcnt prc255;
@@ -3890,7 +3915,7 @@ struct ixgbe_hw_stats {
 	struct evcnt gptc;
 	struct evcnt gorc;
 	struct evcnt gotc;
-	struct evcnt rnbc[8];
+	struct evcnt rnbc[IXGBE_TC_COUNTER_NUM];
 	struct evcnt ruc;
 	struct evcnt rfc;
 	struct evcnt roc;
@@ -3915,7 +3940,7 @@ struct ixgbe_hw_stats {
 	struct evcnt qbrc[16];
 	struct evcnt qbtc[16];
 	struct evcnt qprdc[16];
-	struct evcnt pxon2offc[8];
+	struct evcnt pxon2offc[IXGBE_TC_COUNTER_NUM];
 	u64 fdirustat_add;
 	u64 fdirustat_remove;
 	u64 fdirfstat_fadd;
@@ -4035,6 +4060,7 @@ struct ixgbe_mac_operations {
 	s32 (*init_uta_tables)(struct ixgbe_hw *);
 	void (*set_mac_anti_spoofing)(struct ixgbe_hw *, bool, int);
 	void (*set_vlan_anti_spoofing)(struct ixgbe_hw *, bool, int);
+	s32 (*toggle_txdctl)(struct ixgbe_hw *hw, u32 vf_index);
 
 	/* Flow Control */
 	s32 (*fc_enable)(struct ixgbe_hw *);
@@ -4194,6 +4220,7 @@ struct ixgbe_mbx_operations {
 	s32  (*check_for_msg)(struct ixgbe_hw *, u16);
 	s32  (*check_for_ack)(struct ixgbe_hw *, u16);
 	s32  (*check_for_rst)(struct ixgbe_hw *, u16);
+	s32  (*clear)(struct ixgbe_hw *hw, u16 vf_number);
 };
 
 struct ixgbe_mbx_stats {
@@ -4283,6 +4310,9 @@ struct ixgbe_hw {
 #define IXGBE_ERR_FDIR_CMD_INCOMPLETE		-38
 #define IXGBE_ERR_FW_RESP_INVALID		-39
 #define IXGBE_ERR_TOKEN_RETRY			-40
+
+#define IXGBE_ERR_NOT_TRUSTED			-50 /* XXX NetBSD */
+#define IXGBE_ERR_NOT_IN_PROMISC		-51 /* XXX NetBSD */
 
 #define IXGBE_NOT_IMPLEMENTED			0x7FFFFFFF
 
@@ -4430,7 +4460,7 @@ struct ixgbe_bypass_eeprom {
 #define IXGBE_KRM_LINK_CTRL_1_TETH_EEE_CAP_KR		(1 << 26)
 #define IXGBE_KRM_LINK_S1_MAC_AN_COMPLETE		(1 << 28)
 #define IXGBE_KRM_LINK_CTRL_1_TETH_AN_ENABLE		(1 << 29)
-#define IXGBE_KRM_LINK_CTRL_1_TETH_AN_RESTART		(1 << 31)
+#define IXGBE_KRM_LINK_CTRL_1_TETH_AN_RESTART		(1UL << 31)
 
 #define IXGBE_KRM_AN_CNTL_1_SYM_PAUSE			(1 << 28)
 #define IXGBE_KRM_AN_CNTL_1_ASM_PAUSE			(1 << 29)
@@ -4460,7 +4490,7 @@ struct ixgbe_bypass_eeprom {
 #define IXGBE_KRM_TX_COEFF_CTRL_1_CMINUS1_OVRRD_EN	(1 << 1)
 #define IXGBE_KRM_TX_COEFF_CTRL_1_CPLUS1_OVRRD_EN	(1 << 2)
 #define IXGBE_KRM_TX_COEFF_CTRL_1_CZERO_EN		(1 << 3)
-#define IXGBE_KRM_TX_COEFF_CTRL_1_OVRRD_EN		(1 << 31)
+#define IXGBE_KRM_TX_COEFF_CTRL_1_OVRRD_EN		(1UL << 31)
 
 #define IXGBE_SB_IOSF_INDIRECT_CTRL	0x00011144
 #define IXGBE_SB_IOSF_INDIRECT_DATA	0x00011148
@@ -4476,7 +4506,7 @@ struct ixgbe_bypass_eeprom {
 #define IXGBE_SB_IOSF_CTRL_TARGET_SELECT_SHIFT	28
 #define IXGBE_SB_IOSF_CTRL_TARGET_SELECT_MASK	0x7
 #define IXGBE_SB_IOSF_CTRL_BUSY_SHIFT		31
-#define IXGBE_SB_IOSF_CTRL_BUSY		(1 << IXGBE_SB_IOSF_CTRL_BUSY_SHIFT)
+#define IXGBE_SB_IOSF_CTRL_BUSY		(1UL << IXGBE_SB_IOSF_CTRL_BUSY_SHIFT)
 #define IXGBE_SB_IOSF_TARGET_KR_PHY	0
 
 #define IXGBE_NW_MNG_IF_SEL		0x00011178
@@ -4493,5 +4523,17 @@ struct ixgbe_bypass_eeprom {
 #define IXGBE_NW_MNG_IF_SEL_MDIO_PHY_ADD_SHIFT 3
 #define IXGBE_NW_MNG_IF_SEL_MDIO_PHY_ADD	\
 				(0x1F << IXGBE_NW_MNG_IF_SEL_MDIO_PHY_ADD_SHIFT)
+
+/* Code Command (Flash I/F Interface) */
+#define IXGBE_HOST_INTERFACE_FLASH_READ_CMD			0x30
+#define IXGBE_HOST_INTERFACE_SHADOW_RAM_READ_CMD		0x31
+#define IXGBE_HOST_INTERFACE_FLASH_WRITE_CMD			0x32
+#define IXGBE_HOST_INTERFACE_SHADOW_RAM_WRITE_CMD		0x33
+#define IXGBE_HOST_INTERFACE_FLASH_MODULE_UPDATE_CMD		0x34
+#define IXGBE_HOST_INTERFACE_FLASH_BLOCK_EREASE_CMD		0x35
+#define IXGBE_HOST_INTERFACE_SHADOW_RAM_DUMP_CMD		0x36
+#define IXGBE_HOST_INTERFACE_FLASH_INFO_CMD			0x37
+#define IXGBE_HOST_INTERFACE_APPLY_UPDATE_CMD			0x38
+#define IXGBE_HOST_INTERFACE_MASK_CMD				0x000000FF
 
 #endif /* _IXGBE_TYPE_H_ */

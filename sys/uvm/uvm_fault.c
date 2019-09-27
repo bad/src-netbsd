@@ -1,4 +1,4 @@
-/*	$NetBSD: uvm_fault.c,v 1.204 2018/05/08 19:33:57 christos Exp $	*/
+/*	$NetBSD: uvm_fault.c,v 1.207 2019/08/05 17:36:42 chs Exp $	*/
 
 /*
  * Copyright (c) 1997 Charles D. Cranor and Washington University.
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uvm_fault.c,v 1.204 2018/05/08 19:33:57 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uvm_fault.c,v 1.207 2019/08/05 17:36:42 chs Exp $");
 
 #include "opt_uvmhist.h"
 
@@ -901,6 +901,16 @@ norng:
 				 * object fault routine responsible for
 				 * pmap_update().
 				 */
+
+				/*
+				 * Wake up the pagedaemon if the fault method
+				 * failed for lack of memory but some can be
+				 * reclaimed.
+				 */
+				if (error == ENOMEM && uvm_reclaimable()) {
+					uvm_wait("pgo_fault");
+					error = ERESTART;
+				}
 			} else {
 				error = uvm_fault_lower(&ufi, &flt, pages);
 			}
@@ -986,8 +996,11 @@ uvm_fault_check(
 	 */
 
 	flt->enter_prot = ufi->entry->protection;
-	if (VM_MAPENT_ISWIRED(ufi->entry))
+	if (VM_MAPENT_ISWIRED(ufi->entry)) {
 		flt->wire_mapping = true;
+		flt->wire_paging = true;
+		flt->narrow = true;
+	}
 
 	if (flt->wire_mapping) {
 		flt->access_type = flt->enter_prot; /* full access for wired */
@@ -1424,7 +1437,7 @@ uvm_fault_upper_loan(
 				uvm_wait("flt_noram2");
 				return ERESTART;
 			}
-			/* if we were a loan reciever uobj is gone */
+			/* if we were a loan receiver uobj is gone */
 			if (*ruobj)
 				*ruobj = NULL;
 		}
@@ -2427,8 +2440,6 @@ uvm_fault_unwire_locked(struct vm_map *map, vaddr_t start, vaddr_t end)
 
 	oentry = NULL;
 	for (va = start; va < end; va += PAGE_SIZE) {
-		if (pmap_extract(pmap, va, &pa) == false)
-			continue;
 
 		/*
 		 * find the map entry for the current address.
@@ -2458,6 +2469,9 @@ uvm_fault_unwire_locked(struct vm_map *map, vaddr_t start, vaddr_t end)
 		/*
 		 * if the entry is no longer wired, tell the pmap.
 		 */
+
+		if (!pmap_extract(pmap, va, &pa))
+			continue;
 
 		if (VM_MAPENT_ISWIRED(entry) == 0)
 			pmap_unwire(pmap, va);

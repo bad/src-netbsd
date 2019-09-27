@@ -1,4 +1,4 @@
-/*	$NetBSD: ptrace.h,v 1.63 2018/03/05 11:24:34 kamil Exp $	*/
+/*	$NetBSD: ptrace.h,v 1.65 2019/06/11 23:18:55 kamil Exp $	*/
 
 /*-
  * Copyright (c) 1984, 1993
@@ -108,6 +108,7 @@ typedef struct ptrace_state {
 #define	PTRACE_VFORK_DONE	0x0004	/* Report parent resumed from vforks */
 #define	PTRACE_LWP_CREATE	0x0008	/* Report LWP creation */
 #define	PTRACE_LWP_EXIT		0x0010	/* Report LWP termination */
+#define	PTRACE_POSIX_SPAWN	0x0020	/* Report posix_spawn */
 
 /*
  * Argument structure for PT_IO.
@@ -206,7 +207,7 @@ int	process_validdbregs(struct lwp *);
 
 int	process_domem(struct lwp *, struct lwp *, struct uio *);
 
-void	proc_stoptrace(int);
+void	proc_stoptrace(int, int, const register_t[], const register_t *, int);
 void	proc_reparent(struct proc *, struct proc *);
 void	proc_changeparent(struct proc *, struct proc *);
 

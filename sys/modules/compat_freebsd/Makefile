@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile,v 1.5 2017/08/01 14:43:54 maxv Exp $
+#	$NetBSD: Makefile,v 1.7 2019/06/18 01:43:07 christos Exp $
 
 .include "../Makefile.inc"
 .include "../Makefile.assym"
@@ -6,7 +6,7 @@
 KMOD=	compat_freebsd
 
 CPPFLAGS+=	-DSYSVSHM -DSYSVSEM -DSYSVMSG -DKTRACE -DPTRACE -DNTP
-CPPFLAGS+=	-DCOMPAT_FREEBSD
+CPPFLAGS+=	-DCOMPAT_FREEBSD -DQUOTA
 
 .PATH:	${S}/compat/freebsd
 
@@ -19,5 +19,7 @@ SRCS+=	freebsd_sysctl.c freebsd_sysent.c freebsd_mod.c
 CPPFLAGS+=	-DEXEC_ELF32
 SRCS+=	freebsd_machdep.c freebsd_syscall.c freebsd_sigcode.S
 .endif
+
+WARNS=	3
 
 .include <bsd.kmodule.mk>

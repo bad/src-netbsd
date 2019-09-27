@@ -1,4 +1,4 @@
-/* $NetBSD: udf_subr.c,v 1.145 2019/01/01 10:06:54 hannken Exp $ */
+/* $NetBSD: udf_subr.c,v 1.147 2019/09/18 17:59:15 christos Exp $ */
 
 /*
  * Copyright (c) 2006, 2008 Reinoud Zandijk
@@ -29,7 +29,7 @@
 
 #include <sys/cdefs.h>
 #ifndef lint
-__KERNEL_RCSID(0, "$NetBSD: udf_subr.c,v 1.145 2019/01/01 10:06:54 hannken Exp $");
+__KERNEL_RCSID(0, "$NetBSD: udf_subr.c,v 1.147 2019/09/18 17:59:15 christos Exp $");
 #endif /* not lint */
 
 
@@ -5963,6 +5963,7 @@ udf_create_node(struct vnode *dvp, struct vnode **vpp, struct vattr *vap,
 	/* adjust file count */
 	udf_adjust_filecount(udf_node, 1);
 
+	cache_enter(dvp, *vpp, cnp->cn_nameptr, cnp->cn_namelen, cnp->cn_flags);
 	return 0;
 }
 
@@ -6514,7 +6515,7 @@ recount:
 /*
  * Read and write file extent in/from the buffer.
  *
- * The splitup of the extent into seperate request-buffers is to minimise
+ * The splitup of the extent into separate request-buffers is to minimise
  * copying around as much as possible.
  *
  * block based file reading and writing

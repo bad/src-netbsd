@@ -1,11 +1,11 @@
-/*	$NetBSD: ustir.c,v 1.39 2018/01/21 13:57:12 skrll Exp $	*/
+/*	$NetBSD: ustir.c,v 1.42 2019/09/22 07:28:35 dsainty Exp $	*/
 
 /*
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
  * This code is derived from software contributed to The NetBSD Foundation
- * by David Sainty <David.Sainty@dtsp.co.nz>
+ * by David Sainty <dsainty@NetBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ustir.c,v 1.39 2018/01/21 13:57:12 skrll Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ustir.c,v 1.42 2019/09/22 07:28:35 dsainty Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -96,6 +96,10 @@ struct ustir_softc {
 	device_t		sc_dev;
 	struct usbd_device	*sc_udev;
 	struct usbd_interface	*sc_iface;
+	enum {
+		USTIR_INIT_NONE,
+		USTIR_INIT_INITED
+	} sc_init_state;
 
 	uint8_t			*sc_ur_buf; /* Unencapsulated frame */
 	u_int			sc_ur_framelen;
@@ -216,7 +220,7 @@ void ustir_attach(device_t, device_t, void *);
 void ustir_childdet(device_t, device_t);
 int ustir_detach(device_t, int);
 int ustir_activate(device_t, enum devact);
-extern struct cfdriver ustir_cd;
+
 CFATTACH_DECL2_NEW(ustir, sizeof(struct ustir_softc), ustir_match,
     ustir_attach, ustir_detach, ustir_activate, NULL, ustir_childdet);
 
@@ -250,6 +254,7 @@ ustir_attach(device_t parent, device_t self, void *aux)
 	DPRINTFN(10,("ustir_attach: sc=%p\n", sc));
 
 	sc->sc_dev = self;
+	sc->sc_init_state = USTIR_INIT_NONE;
 
 	aprint_naive("\n");
 	aprint_normal("\n");
@@ -302,6 +307,7 @@ ustir_attach(device_t parent, device_t self, void *aux)
 	sc->sc_child = config_found(self, &ia, ir_print);
 	selinit(&sc->sc_rd_sel);
 	selinit(&sc->sc_wr_sel);
+	sc->sc_init_state = USTIR_INIT_INITED;
 
 	return;
 }
@@ -369,10 +375,12 @@ ustir_detach(device_t self, int flags)
 	if (sc->sc_child != NULL)
 		rv = config_detach(sc->sc_child, flags);
 
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev, sc->sc_dev);
-
-	seldestroy(&sc->sc_rd_sel);
-	seldestroy(&sc->sc_wr_sel);
+	if (sc->sc_init_state >= USTIR_INIT_INITED) {
+		usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
+		    sc->sc_dev);
+		seldestroy(&sc->sc_rd_sel);
+		seldestroy(&sc->sc_wr_sel);
+	}
 
 	return rv;
 }

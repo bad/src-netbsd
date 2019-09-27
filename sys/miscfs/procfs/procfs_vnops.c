@@ -1,4 +1,4 @@
-/*	$NetBSD: procfs_vnops.c,v 1.205 2018/10/14 17:37:40 jdolecek Exp $	*/
+/*	$NetBSD: procfs_vnops.c,v 1.207 2019/08/29 06:43:13 hannken Exp $	*/
 
 /*-
  * Copyright (c) 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -105,7 +105,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: procfs_vnops.c,v 1.205 2018/10/14 17:37:40 jdolecek Exp $");
+__KERNEL_RCSID(0, "$NetBSD: procfs_vnops.c,v 1.207 2019/08/29 06:43:13 hannken Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -159,25 +159,26 @@ static const struct proc_target {
 	{ DT_DIR, N("."),	PFSproc,	NULL },
 	{ DT_DIR, N(".."),	PFSroot,	NULL },
 	{ DT_DIR, N("fd"),	PFSfd,		NULL },
-	{ DT_REG, N("file"),	PFSfile,	procfs_validfile },
+	{ DT_DIR, N("task"),	PFStask,	procfs_validfile_linux },
+	{ DT_LNK, N("cwd"),	PFScwd,		NULL },
+	{ DT_LNK, N("emul"),	PFSemul,	NULL },
+	{ DT_LNK, N("root"),	PFSchroot,	NULL },
 	{ DT_REG, N("auxv"),	PFSauxv,	procfs_validauxv },
-	{ DT_REG, N("mem"),	PFSmem,		NULL },
-	{ DT_REG, N("regs"),	PFSregs,	procfs_validregs },
-	{ DT_REG, N("fpregs"),	PFSfpregs,	procfs_validfpregs },
-	{ DT_REG, N("stat"),	PFSstat,	procfs_validfile_linux },
-	{ DT_REG, N("status"),	PFSstatus,	NULL },
-	{ DT_REG, N("note"),	PFSnote,	NULL },
-	{ DT_REG, N("notepg"),	PFSnotepg,	NULL },
-	{ DT_REG, N("map"),	PFSmap,		procfs_validmap },
-	{ DT_REG, N("maps"),	PFSmaps,	procfs_validmap },
 	{ DT_REG, N("cmdline"), PFScmdline,	NULL },
 	{ DT_REG, N("environ"), PFSenviron,	NULL },
 	{ DT_REG, N("exe"),	PFSexe,		procfs_validfile },
-	{ DT_LNK, N("cwd"),	PFScwd,		NULL },
-	{ DT_LNK, N("root"),	PFSchroot,	NULL },
-	{ DT_LNK, N("emul"),	PFSemul,	NULL },
+	{ DT_REG, N("file"),	PFSfile,	procfs_validfile },
+	{ DT_REG, N("fpregs"),	PFSfpregs,	procfs_validfpregs },
+	{ DT_REG, N("limit"),	PFSlimit,	NULL },
+	{ DT_REG, N("map"),	PFSmap,		procfs_validmap },
+	{ DT_REG, N("maps"),	PFSmaps,	procfs_validmap },
+	{ DT_REG, N("mem"),	PFSmem,		NULL },
+	{ DT_REG, N("note"),	PFSnote,	NULL },
+	{ DT_REG, N("notepg"),	PFSnotepg,	NULL },
+	{ DT_REG, N("regs"),	PFSregs,	procfs_validregs },
+	{ DT_REG, N("stat"),	PFSstat,	procfs_validfile_linux },
 	{ DT_REG, N("statm"),	PFSstatm,	procfs_validfile_linux },
-	{ DT_DIR, N("task"),	PFStask,	procfs_validfile_linux },
+	{ DT_REG, N("status"),	PFSstatus,	NULL },
 #ifdef __HAVE_PROCFS_MACHDEP
 	PROCFS_MACHDEP_NODETYPE_DEFNS
 #endif
@@ -242,6 +243,7 @@ int	procfs_pathconf(void *);
 #define	procfs_islocked	genfs_islocked
 #define	procfs_advlock	genfs_einval
 #define	procfs_bwrite	genfs_eopnotsupp
+int	procfs_getpages(void *);
 #define procfs_putpages	genfs_null_putpages
 
 static int atoi(const char *, size_t);
@@ -290,6 +292,7 @@ const struct vnodeopv_entry_desc procfs_vnodeop_entries[] = {
 	{ &vop_islocked_desc, procfs_islocked },	/* islocked */
 	{ &vop_pathconf_desc, procfs_pathconf },	/* pathconf */
 	{ &vop_advlock_desc, procfs_advlock },		/* advlock */
+	{ &vop_getpages_desc, procfs_getpages },	/* getpages */
 	{ &vop_putpages_desc, procfs_putpages },	/* putpages */
 	{ NULL, NULL }
 };
@@ -745,6 +748,7 @@ procfs_getattr(void *v)
 
 	case PFSmap:
 	case PFSmaps:
+	case PFSlimit:
 	case PFSauxv:
 		vap->va_nlink = 1;
 		vap->va_uid = kauth_cred_geteuid(procp->p_cred);
@@ -884,6 +888,7 @@ procfs_getattr(void *v)
 	case PFSversion:
 		vap->va_bytes = vap->va_size = 0;
 		break;
+	case PFSlimit:
 	case PFSmap:
 	case PFSmaps:
 		/*
@@ -1714,6 +1719,26 @@ procfs_readlink(void *v)
 	if (path)
 		free(path, M_TEMP);
 	return error;
+}
+
+int
+procfs_getpages(void *v)
+{
+	struct vop_getpages_args /* {
+		struct vnode *a_vp;
+		voff_t a_offset;
+		struct vm_page **a_m;
+		int *a_count;
+		int a_centeridx;
+		vm_prot_t a_access_type;
+		int a_advice;
+		int a_flags;
+	} */ *ap = v;
+
+	if ((ap->a_flags & PGO_LOCKED) == 0)
+		mutex_exit(ap->a_vp->v_interlock);
+
+	return (EFAULT);
 }
 
 /*

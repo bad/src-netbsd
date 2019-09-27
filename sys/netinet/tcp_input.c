@@ -1,4 +1,4 @@
-/*	$NetBSD: tcp_input.c,v 1.413 2018/11/08 06:43:52 msaitoh Exp $	*/
+/*	$NetBSD: tcp_input.c,v 1.416 2019/09/25 19:06:30 jnemeth Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
@@ -148,7 +148,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tcp_input.c,v 1.413 2018/11/08 06:43:52 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tcp_input.c,v 1.416 2019/09/25 19:06:30 jnemeth Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -1350,11 +1350,11 @@ tcp_input(struct mbuf *m, int off, int proto)
 		if ((optlen == TCPOLEN_TSTAMP_APPA ||
 		     (optlen > TCPOLEN_TSTAMP_APPA &&
 		      optp[TCPOLEN_TSTAMP_APPA] == TCPOPT_EOL)) &&
-		    *(u_int32_t *)optp == htonl(TCPOPT_TSTAMP_HDR) &&
+		    be32dec(optp) == TCPOPT_TSTAMP_HDR &&
 		    (th->th_flags & TH_SYN) == 0) {
 			opti.ts_present = 1;
-			opti.ts_val = ntohl(*(u_int32_t *)(optp + 4));
-			opti.ts_ecr = ntohl(*(u_int32_t *)(optp + 8));
+			opti.ts_val = be32dec(optp + 4);
+			opti.ts_ecr = be32dec(optp + 8);
 			optp = NULL;	/* we've parsed the options */
 		}
 	}
@@ -2405,8 +2405,8 @@ after_listen:
 
 	/*
 	 * Since we've covered the SYN-SENT and SYN-RECEIVED states above
-	 * we must be in a synchronized state.  RFC791 states (under RST
-	 * generation) that any unacceptable segment (an out-of-order SYN
+	 * we must be in a synchronized state.  RFC793 states (under Reset
+	 * Generation) that any unacceptable segment (an out-of-order SYN
 	 * qualifies) received in a synchronized state must elicit only an
 	 * empty acknowledgment segment ... and the connection remains in
 	 * the same state.
@@ -3379,7 +3379,7 @@ tcp_xmit_timer(struct tcpcb *tp, uint32_t rtt)
 		if (__predict_false(tcp_rttlocal) && tcp_msl_enable
 		    && tp->t_srtt > tcp_msl_remote_threshold
 		    && tp->t_msl  < tcp_msl_remote) {
-			tp->t_msl = tcp_msl_remote;
+			tp->t_msl = MIN(tcp_msl_remote, TCP_MAXMSL);
 		}
 	} else {
 		/*
@@ -3647,7 +3647,7 @@ syn_cache_timer(void *arg)
 	 * than the keep alive timer would allow, expire it.
 	 */
 	sc->sc_rxttot += sc->sc_rxtcur;
-	if (sc->sc_rxttot >= tcp_keepinit)
+	if (sc->sc_rxttot >= MIN(tcp_keepinit, TCP_TIMER_MAXTICKS))
 		goto dropit;
 
 	TCP_STATINC(TCP_STAT_SC_RETRANSMITTED);

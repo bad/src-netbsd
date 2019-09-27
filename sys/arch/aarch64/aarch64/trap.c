@@ -1,4 +1,4 @@
-/* $NetBSD: trap.c,v 1.14 2018/12/13 10:44:25 ryo Exp $ */
+/* $NetBSD: trap.c,v 1.18 2019/08/07 09:49:40 jmcneill Exp $ */
 
 /*-
  * Copyright (c) 2014 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
 
 #include <sys/cdefs.h>
 
-__KERNEL_RCSID(1, "$NetBSD: trap.c,v 1.14 2018/12/13 10:44:25 ryo Exp $");
+__KERNEL_RCSID(1, "$NetBSD: trap.c,v 1.18 2019/08/07 09:49:40 jmcneill Exp $");
 
 #include "opt_arm_intr_impl.h"
 #include "opt_compat_netbsd32.h"
@@ -355,6 +355,7 @@ trap_el0_32sync(struct trapframe *tf)
 	case ESR_EC_FP_TRAP_A32:
 		do_trapsignal(l, SIGFPE, FPE_FLTUND, NULL, esr); /* XXX */
 		userret(l);
+		break;
 
 	case ESR_EC_PC_ALIGNMENT:
 		do_trapsignal(l, SIGBUS, BUS_ADRALN, (void *)tf->tf_pc, esr);
@@ -430,25 +431,6 @@ cpu_jump_onfault(struct trapframe *tf, const struct faultbuf *fb, int val)
 	tf->tf_sp = fb->fb_reg[FB_SP];
 	tf->tf_pc = fb->fb_reg[FB_LR];
 	tf->tf_reg[0] = val;
-}
-
-void
-ucas_ras_check(struct trapframe *tf)
-{
-#if 0 /* XXX notyet */
-	extern char ucas_32_ras_start[];
-	extern char ucas_32_ras_end[];
-	extern char ucas_64_ras_start[];
-	extern char ucas_64_ras_end[];
-
-	if (tf->tf_pc > (vaddr_t)ucas_32_ras_start &&
-	    tf->tf_pc < (vaddr_t)ucas_32_ras_end) {
-		tf->tf_pc = (vaddr_t)ucas_32_ras_start;
-	} else if (tf->tf_pc > (vaddr_t)ucas_64_ras_start &&
-	    tf->tf_pc < (vaddr_t)ucas_64_ras_end) {
-		tf->tf_pc = (vaddr_t)ucas_64_ras_start;
-	}
-#endif
 }
 
 #ifdef TRAP_SIGDEBUG

@@ -1,4 +1,4 @@
-/*	$NetBSD: db_memrw.c,v 1.7 2018/11/18 14:16:13 christos Exp $	*/
+/*	$NetBSD: db_memrw.c,v 1.11 2019/04/21 06:37:21 maxv Exp $	*/
 
 /*-
  * Copyright (c) 1996, 2000 The NetBSD Foundation, Inc.
@@ -53,7 +53,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: db_memrw.c,v 1.7 2018/11/18 14:16:13 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: db_memrw.c,v 1.11 2019/04/21 06:37:21 maxv Exp $");
 
 #include <sys/param.h>
 #include <sys/proc.h>
@@ -90,7 +90,9 @@ db_read_bytes(vaddr_t addr, size_t size, char *data)
 	src = (char *)addr;
 
 	if (db_validate_address((vaddr_t)src)) {
+#ifdef DDB
 		db_printf("address %p is invalid\n", src);
+#endif
 		return;
 	}
 
@@ -111,7 +113,9 @@ db_read_bytes(vaddr_t addr, size_t size, char *data)
 
 	while (size-- > 0) {
 		if (db_validate_address((vaddr_t)src)) {
+#ifdef DDB
 			db_printf("address %p is invalid\n", src);
+#endif
 			return;
 		}
 
@@ -143,8 +147,10 @@ db_write_text(vaddr_t addr, size_t size, const char *data)
 		ppte = kvtopte(addr);
 		pte = *ppte;
 
-		if ((pte & PG_V) == 0) {
+		if ((pte & PTE_P) == 0) {
+#ifdef DDB
 			db_printf(" address %p not a valid page\n", dst);
+#endif
 			return;
 		}
 
@@ -153,7 +159,7 @@ db_write_text(vaddr_t addr, size_t size, const char *data)
 		 * with this mapping and subtract it from the
 		 * total size.
 		 */
-		if (pte & PG_PS)
+		if (pte & PTE_PS)
 			limit = NBPD_L2 - (addr & (NBPD_L2 - 1));
 		else
 			limit = PAGE_SIZE - (addr & PGOFSET);
@@ -164,8 +170,7 @@ db_write_text(vaddr_t addr, size_t size, const char *data)
 		/*
 		 * Make the kernel text page writable.
 		 */
-		pmap_pte_clearbits(ppte, PG_KR);
-		pmap_pte_setbits(ppte, PG_KW);
+		pmap_pte_setbits(ppte, PTE_W);
 		pmap_update_pg(addr);
 
 		/*
@@ -183,8 +188,7 @@ db_write_text(vaddr_t addr, size_t size, const char *data)
 		/*
 		 * Turn the page back to read-only.
 		 */
-		pmap_pte_clearbits(ppte, PG_KW);
-		pmap_pte_setbits(ppte, PG_KR);
+		pmap_pte_clearbits(ppte, PTE_W);
 		pmap_update_pg(addr);
 
 		/*

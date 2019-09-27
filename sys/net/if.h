@@ -1,4 +1,4 @@
-/*	$NetBSD: if.h,v 1.266 2018/10/18 11:34:54 knakahara Exp $	*/
+/*	$NetBSD: if.h,v 1.277 2019/09/19 06:07:24 knakahara Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001 The NetBSD Foundation, Inc.
@@ -75,6 +75,11 @@
  */
 #define IF_NAMESIZE 16
 
+/*
+ * Length of interface description, including terminating '\0'.
+ */
+#define	IFDESCRSIZE	64
+
 #if defined(_NETBSD_SOURCE)
 
 #include <sys/socket.h>
@@ -88,6 +93,7 @@
 #include <sys/pslist.h>
 #include <sys/pserialize.h>
 #include <sys/psref.h>
+#include <sys/module_hook.h>
 #endif
 
 /*
@@ -243,7 +249,7 @@ typedef unsigned short if_index_t;
  * a:	if_afdata_lock
  * 6:	in6_multilock (global lock)
  * ::	unlocked, stable
- * ?:	unkown, maybe unsafe
+ * ?:	unknown, maybe unsafe
  *
  * Lock order: IFNET_LOCK => in6_multilock => if_afdata_lock => ifq_lock
  *   Note that currently if_afdata_lock and ifq_lock aren't held
@@ -334,6 +340,7 @@ typedef struct ifnet {
 	struct mowner	*if_mowner;	/* ?: who owns mbufs for this interface */
 
 	void		*if_agrprivate;	/* ?: used only when #if NAGR > 0 */
+	void		*if_npf_private;/* ?: associated NPF context */
 
 	/*
 	 * pf specific data, used only when #if NPF > 0.
@@ -362,8 +369,9 @@ typedef struct ifnet {
 			    (struct ifnet *, const unsigned long,
 			    const struct sockaddr *);
 	int		(*if_setflags)	/* :: */
-			    (struct ifnet *, const short);
+			    (struct ifnet *, const u_short);
 	kmutex_t	*if_ioctl_lock;	/* :: */
+	char		*if_description;	/* i: interface description */
 #ifdef _KERNEL /* XXX kvm(3) */
 	struct callout	*if_slowtimo_ch;/* :: */
 	struct krwlock	*if_afdata_lock;/* :: */
@@ -412,7 +420,7 @@ typedef struct ifnet {
 #define	IFF_DEBUG	0x0004		/* turn on debugging */
 #define	IFF_LOOPBACK	0x0008		/* is a loopback net */
 #define	IFF_POINTOPOINT	0x0010		/* interface is point-to-point link */
-#define	IFF_NOTRAILERS	0x0020		/* avoid use of trailers */
+/*			0x0020		   was IFF_NOTRAILERS */
 #define	IFF_RUNNING	0x0040		/* resources allocated */
 #define	IFF_NOARP	0x0080		/* no address resolution protocol */
 #define	IFF_PROMISC	0x0100		/* receive all packets */
@@ -572,7 +580,7 @@ if_is_link_state_changeable(struct ifnet *ifp)
 #endif /* _KERNEL */
 
 #define	IFFBITS \
-    "\020\1UP\2BROADCAST\3DEBUG\4LOOPBACK\5POINTOPOINT\6NOTRAILERS" \
+    "\020\1UP\2BROADCAST\3DEBUG\4LOOPBACK\5POINTOPOINT" \
     "\7RUNNING\10NOARP\11PROMISC\12ALLMULTI\13OACTIVE\14SIMPLEX" \
     "\15LINK0\16LINK1\17LINK2\20MULTICAST"
 
@@ -870,14 +878,14 @@ struct ifdatareq {
 };
 
 struct ifmediareq {
-	char	ifm_name[IFNAMSIZ];		/* if name, e.g. "en0" */
-	int	ifm_current;			/* current media options */
-	int	ifm_mask;			/* don't care mask */
-	int	ifm_status;			/* media status */
-	int	ifm_active;			/* active options */
-	int	ifm_count;			/* # entries in ifm_ulist
-						   array */
-	int	*ifm_ulist;			/* media words */
+	char	ifm_name[IFNAMSIZ];	/* if name, e.g. "en0" */
+	int	ifm_current;		/* IFMWD: current media options */
+	int	ifm_mask;		/* IFMWD: don't care mask */
+	int	ifm_status;		/* media status */
+	int	ifm_active;		/* IFMWD: active options */
+	int	ifm_count;		/* # entries in ifm_ulist
+					   array */
+	int	*ifm_ulist;		/* array of ifmedia word */
 };
 
 
@@ -938,11 +946,11 @@ struct if_addrprefreq {
 #define IFQ_ENQUEUE(ifq, m, err)					\
 do {									\
 	mutex_enter((ifq)->ifq_lock);					\
-	if (ALTQ_IS_ENABLED((ifq)))					\
+	if (ALTQ_IS_ENABLED(ifq))					\
 		ALTQ_ENQUEUE((ifq), (m), (err));			\
 	else {								\
-		if (IF_QFULL((ifq))) {					\
-			m_freem((m));					\
+		if (IF_QFULL(ifq)) {					\
+			m_freem(m);					\
 			(err) = ENOBUFS;				\
 		} else {						\
 			IF_ENQUEUE((ifq), (m));				\
@@ -957,9 +965,9 @@ do {									\
 #define IFQ_DEQUEUE(ifq, m)						\
 do {									\
 	mutex_enter((ifq)->ifq_lock);					\
-	if (TBR_IS_ENABLED((ifq)))					\
+	if (TBR_IS_ENABLED(ifq))					\
 		(m) = tbr_dequeue((ifq), ALTDQ_REMOVE);			\
-	else if (ALTQ_IS_ENABLED((ifq)))				\
+	else if (ALTQ_IS_ENABLED(ifq))					\
 		ALTQ_DEQUEUE((ifq), (m));				\
 	else								\
 		IF_DEQUEUE((ifq), (m));					\
@@ -969,9 +977,9 @@ do {									\
 #define	IFQ_POLL(ifq, m)						\
 do {									\
 	mutex_enter((ifq)->ifq_lock);					\
-	if (TBR_IS_ENABLED((ifq)))					\
+	if (TBR_IS_ENABLED(ifq))					\
 		(m) = tbr_dequeue((ifq), ALTDQ_POLL);			\
-	else if (ALTQ_IS_ENABLED((ifq)))				\
+	else if (ALTQ_IS_ENABLED(ifq))					\
 		ALTQ_POLL((ifq), (m));					\
 	else								\
 		IF_POLL((ifq), (m));					\
@@ -981,10 +989,10 @@ do {									\
 #define	IFQ_PURGE(ifq)							\
 do {									\
 	mutex_enter((ifq)->ifq_lock);					\
-	if (ALTQ_IS_ENABLED((ifq)))					\
-		ALTQ_PURGE((ifq));					\
+	if (ALTQ_IS_ENABLED(ifq))					\
+		ALTQ_PURGE(ifq);					\
 	else								\
-		IF_PURGE((ifq));					\
+		IF_PURGE(ifq);						\
 	mutex_exit((ifq)->ifq_lock);					\
 } while (/*CONSTCOND*/ 0)
 
@@ -995,14 +1003,14 @@ do {									\
 
 #define	IFQ_CLASSIFY(ifq, m, af)					\
 do {									\
-	KASSERT((m->m_flags & M_PKTHDR) != 0);				\
+	KASSERT(((m)->m_flags & M_PKTHDR) != 0);			\
 	mutex_enter((ifq)->ifq_lock);					\
-	if (ALTQ_IS_ENABLED((ifq))) {					\
-		if (ALTQ_NEEDS_CLASSIFY((ifq)))				\
-			m->m_pkthdr.pattr_class = (*(ifq)->altq_classify) \
+	if (ALTQ_IS_ENABLED(ifq)) {					\
+		if (ALTQ_NEEDS_CLASSIFY(ifq))				\
+			(m)->m_pkthdr.pattr_class = (*(ifq)->altq_classify) \
 				((ifq)->altq_clfier, (m), (af));	\
-		m->m_pkthdr.pattr_af = (af);				\
-		m->m_pkthdr.pattr_hdr = mtod((m), void *);		\
+		(m)->m_pkthdr.pattr_af = (af);				\
+		(m)->m_pkthdr.pattr_hdr = mtod((m), void *);		\
 	}								\
 	mutex_exit((ifq)->ifq_lock);					\
 } while (/*CONSTCOND*/ 0)
@@ -1010,14 +1018,14 @@ do {									\
 #define	IFQ_ENQUEUE(ifq, m, err)					\
 do {									\
 	mutex_enter((ifq)->ifq_lock);					\
-	if (IF_QFULL((ifq))) {						\
-		m_freem((m));						\
+	if (IF_QFULL(ifq)) {						\
+		m_freem(m);						\
 		(err) = ENOBUFS;					\
 	} else {							\
 		IF_ENQUEUE((ifq), (m));					\
 		(err) = 0;						\
 	}								\
-	if ((err))							\
+	if (err)							\
 		(ifq)->ifq_drops++;					\
 	mutex_exit((ifq)->ifq_lock);					\
 } while (/*CONSTCOND*/ 0)
@@ -1039,7 +1047,7 @@ do {									\
 #define	IFQ_PURGE(ifq)							\
 do {									\
 	mutex_enter((ifq)->ifq_lock);					\
-	IF_PURGE((ifq));						\
+	IF_PURGE(ifq);							\
 	mutex_exit((ifq)->ifq_lock);					\
 } while (/*CONSTCOND*/ 0)
 
@@ -1055,7 +1063,7 @@ do {									\
 #define IFQ_LOCK(ifq)		mutex_enter((ifq)->ifq_lock)
 #define IFQ_UNLOCK(ifq)		mutex_exit((ifq)->ifq_lock)
 
-#define	IFQ_IS_EMPTY(ifq)		IF_IS_EMPTY((ifq))
+#define	IFQ_IS_EMPTY(ifq)		IF_IS_EMPTY(ifq)
 #define	IFQ_INC_LEN(ifq)		((ifq)->ifq_len++)
 #define	IFQ_DEC_LEN(ifq)		(--(ifq)->ifq_len)
 #define	IFQ_INC_DROPS(ifq)		((ifq)->ifq_drops++)
@@ -1100,7 +1108,7 @@ int	ifpromisc_locked(struct ifnet *, int);
 int	if_addr_init(ifnet_t *, struct ifaddr *, bool);
 int	if_do_dad(struct ifnet *);
 int	if_mcast_op(ifnet_t *, const unsigned long, const struct sockaddr *);
-int	if_flags_set(struct ifnet *, const short);
+int	if_flags_set(struct ifnet *, const u_short);
 int	if_clone_list(int, char *, int *);
 
 struct	ifnet *ifunit(const char *);
@@ -1114,6 +1122,33 @@ void	if_acquire(struct ifnet *, struct psref *);
 #define	if_release	if_put
 
 int if_tunnel_check_nesting(struct ifnet *, struct mbuf *, int);
+percpu_t *if_tunnel_alloc_ro_percpu(void);
+void if_tunnel_free_ro_percpu(percpu_t *);
+void if_tunnel_ro_percpu_rtcache_free(percpu_t *);
+
+struct tunnel_ro {
+	struct route *tr_ro;
+	kmutex_t *tr_lock;
+};
+
+static inline void
+if_tunnel_get_ro(percpu_t *ro_percpu, struct route **ro, kmutex_t **lock)
+{
+	struct tunnel_ro *tro;
+
+	tro = percpu_getref(ro_percpu);
+	*ro = tro->tr_ro;
+	*lock = tro->tr_lock;
+	mutex_enter(*lock);
+}
+
+static inline void
+if_tunnel_put_ro(percpu_t *ro_percpu, kmutex_t *lock)
+{
+
+	mutex_exit(lock);
+	percpu_putref(ro_percpu);
+}
 
 static __inline if_index_t
 if_get_index(const struct ifnet *ifp)
@@ -1250,7 +1285,7 @@ __END_DECLS
 	                     ifa_pslist_entry) == NULL)
 #define IFADDR_WRITER_INSERT_TAIL(__ifp, __new)				\
 	do {								\
-		if (IFADDR_WRITER_EMPTY((__ifp))) {			\
+		if (IFADDR_WRITER_EMPTY(__ifp)) {			\
 			IFADDR_WRITER_INSERT_HEAD((__ifp), (__new));	\
 		} else {						\
 			struct ifaddr *__ifa;				\
@@ -1293,7 +1328,7 @@ __END_DECLS
 #define IFNET_WRITER_INSERT_TAIL(__new)					\
 	do {								\
 		if (IFNET_WRITER_EMPTY()) {				\
-			IFNET_WRITER_INSERT_HEAD((__new));		\
+			IFNET_WRITER_INSERT_HEAD(__new);		\
 		} else {						\
 			struct ifnet *__ifp;				\
 			IFNET_WRITER_FOREACH(__ifp) {			\
@@ -1329,6 +1364,11 @@ int	sysctl_ifq(int *name, u_int namelen, void *oldp,
 #define IFQCTL_MAXLEN	2
 #define IFQCTL_PEAK	3
 #define IFQCTL_DROPS	4
+
+/* 
+ * Hook for if_vlan - needed by if_agr
+ */
+MODULE_HOOK(if_vlan_vlan_input_hook, void, (struct ifnet *, struct mbuf *));
 
 #endif /* _KERNEL */
 

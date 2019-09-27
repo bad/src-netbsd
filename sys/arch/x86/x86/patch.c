@@ -1,4 +1,4 @@
-/*	$NetBSD: patch.c,v 1.35 2018/07/14 14:34:32 maxv Exp $	*/
+/*	$NetBSD: patch.c,v 1.37 2019/09/18 15:07:08 kamil Exp $	*/
 
 /*-
  * Copyright (c) 2007, 2008, 2009 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: patch.c,v 1.35 2018/07/14 14:34:32 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: patch.c,v 1.37 2019/09/18 15:07:08 kamil Exp $");
 
 #include "opt_lockdebug.h"
 #ifdef i386
@@ -132,6 +132,8 @@ patchbytes(void *addr, const uint8_t *bytes, size_t size)
 	}
 }
 
+/* The local variables have unknown alignment to UBSan */
+__noubsan
 void
 x86_hotpatch(uint32_t name, const uint8_t *bytes, size_t size)
 {
