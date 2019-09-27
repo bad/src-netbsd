@@ -28,7 +28,7 @@
  */
 
 #include <sys/cdefs.h>
-__RCSID("$NetBSD: npfctl.c,v 1.56 2018/09/29 14:41:36 rmind Exp $");
+__RCSID("$NetBSD: npfctl.c,v 1.61 2019/08/21 21:41:53 rmind Exp $");
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -153,6 +153,9 @@ usage(void)
 	fprintf(stderr,
 	    "\t%s list [-46hNnw] [-i <ifname>]\n",
 	    progname);
+	fprintf(stderr,
+	    "\t%s debug [<rule-file>] [<raw-output>]\n",
+	    progname);
 	exit(EXIT_FAILURE);
 }
 
@@ -227,6 +230,9 @@ npfctl_print_error(const npf_error_t *ne)
 {
 	const char *srcfile = ne->source_file;
 
+	if (ne->error_msg) {
+		errx(EXIT_FAILURE, "%s", ne->error_msg);
+	}
 	if (srcfile) {
 		warnx("source %s line %d", srcfile, ne->source_line);
 	}
@@ -344,7 +350,7 @@ again:
 	case EEXIST:
 		errx(EXIT_FAILURE, "entry already exists or is conflicting");
 	case ENOENT:
-		errx(EXIT_FAILURE, "no matching entry was not found");
+		errx(EXIT_FAILURE, "not found");
 	case EINVAL:
 		errx(EXIT_FAILURE, "invalid address, mask or table ID");
 	case ENOMEM:
@@ -375,7 +381,7 @@ again:
 	} else {
 		printf("%s: %s\n", getprogname(),
 		    nct.nct_cmd == NPF_CMD_TABLE_LOOKUP ?
-		    "matching entry found" : "success");
+		    "match" : "success");
 	}
 	exit(EXIT_SUCCESS);
 }
@@ -582,13 +588,13 @@ npfctl_load(int fd)
 }
 
 struct npf_conn_filter {
-	uint16_t alen;
-	const char *ifname;
-	bool nat;
-	bool wide;
-	bool name;
-	int width;
-	FILE *fp;
+	uint16_t	alen;
+	const char *	ifname;
+	bool		nat;
+	bool		wide;
+	bool		name;
+	int		width;
+	FILE *		fp;
 };
 
 static int
@@ -611,11 +617,13 @@ npfctl_conn_print(unsigned alen, const npf_addr_t *a, const in_port_t *p,
 	    (alen == sizeof(struct in_addr) ? "%a" : "[%a]");
 	src = npfctl_print_addrmask(alen, fmt, &a[0], NPF_NO_NETMASK);
 	dst = npfctl_print_addrmask(alen, fmt, &a[1], NPF_NO_NETMASK);
-	if (fil->wide)
+
+	if (fil->wide) {
 		fprintf(fp, "%s:%d %s:%d", src, p[0], dst, p[1]);
-	else
+	} else {
 		fprintf(fp, "%*.*s:%-5d %*.*s:%-5d", w, w, src, p[0],
 		    w, w, dst, p[1]);
+	}
 	free(src);
 	free(dst);
 	if (!p[2]) {
@@ -626,15 +634,13 @@ npfctl_conn_print(unsigned alen, const npf_addr_t *a, const in_port_t *p,
 	return 1;
 }
 
-
 static int
 npfctl_conn_list(int fd, int argc, char **argv)
 {
 	struct npf_conn_filter f;
-	int c;
-	int header = true;
-	memset(&f, 0, sizeof(f));
+	int c, w, header = true;
 
+	memset(&f, 0, sizeof(f));
 	argc--;
 	argv++;
 
@@ -648,6 +654,7 @@ npfctl_conn_list(int fd, int argc, char **argv)
 			break;
 		case 'h':
 			header = false;
+			break;
 		case 'i':
 			f.ifname = optarg;
 			break;
@@ -668,12 +675,13 @@ npfctl_conn_list(int fd, int argc, char **argv)
 		}
 	}
 	f.width = f.alen == sizeof(struct in_addr) ? 25 : 41;
-	int w = f.width + 6;
+	w = f.width + 6;
 	f.fp = stdout;
-	if (header)
+
+	if (header) {
 		fprintf(f.fp, "%*.*s %*.*s\n",
 		    w, w, "From address:port ", w, w, "To address:port ");
-
+	}
 	npf_conn_list(fd, npfctl_conn_print, &f);
 	return 0;
 }
@@ -693,7 +701,7 @@ npfctl_open_dev(const char *path)
 	if (kernver != NPF_VERSION) {
 		errx(EXIT_FAILURE,
 		    "incompatible NPF interface version (%d, kernel %d)\n"
-		    "Hint: update %s?", NPF_VERSION, kernver, 
+		    "Hint: update %s?", NPF_VERSION, kernver,
 		    kernver > NPF_VERSION ? "userland" : "kernel");
 	}
 	return fd;

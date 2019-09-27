@@ -1,5 +1,3 @@
-/*	$NetBSD: npf_test_subr.c,v 1.13 2018/09/29 14:41:36 rmind Exp $	*/
-
 /*
  * NPF initialisation and handler routines.
  *
@@ -50,7 +48,7 @@ static void		npftest_ifop_flush(void *);
 static void *		npftest_ifop_getmeta(const ifnet_t *);
 static void		npftest_ifop_setmeta(ifnet_t *, void *);
 
-static const npf_ifops_t npftest_ifops = {
+const npf_ifops_t npftest_ifops = {
 	.getname	= npftest_ifop_getname,
 	.lookup		= npf_test_getif,
 	.flush		= npftest_ifop_flush,
@@ -65,23 +63,26 @@ npf_test_init(int (*pton_func)(int, const char *, void *),
 {
 	npf_t *npf;
 
-	npf_sysinit(1);
-	npf = npf_create(0, &npftest_mbufops, &npftest_ifops);
-	npf_thread_register(npf);
+	npfk_sysinit(0);
+	npf = npfk_create(0, &npftest_mbufops, &npftest_ifops);
+	npfk_thread_register(npf);
 	npf_setkernctx(npf);
 
 	npf_state_setsampler(npf_state_sample);
 	_pton_func = pton_func;
 	_ntop_func = ntop_func;
 	_random_func = rndfunc;
+
+	(void)npf_test_addif(IFNAME_DUMMY, false, false);
 }
 
 void
 npf_test_fini(void)
 {
 	npf_t *npf = npf_getkernctx();
-	npf_destroy(npf);
-	npf_sysfini();
+	npfk_thread_unregister(npf);
+	npfk_destroy(npf);
+	npfk_sysfini();
 }
 
 int
@@ -98,7 +99,7 @@ npf_test_load(const void *buf, size_t len, bool verbose)
 	load_npf_config_ifs(npf_dict, verbose);
 
 	// Note: npf_dict will be consumed by npf_load().
-	return npf_load(npf_getkernctx(), npf_dict, &error);
+	return npfk_load(npf_getkernctx(), npf_dict, &error);
 }
 
 ifnet_t *
@@ -115,7 +116,7 @@ npf_test_addif(const char *ifname, bool reg, bool verbose)
 	strlcpy(ifp->if_xname, ifname, sizeof(ifp->if_xname));
 	TAILQ_INSERT_TAIL(&npftest_ifnet_list, ifp, if_list);
 
-	npf_ifmap_attach(npf, ifp);
+	npfk_ifmap_attach(npf, ifp);
 	if (reg) {
 		npf_ifmap_register(npf, ifname);
 	}
@@ -211,7 +212,7 @@ npf_test_statetrack(const void *data, size_t len, ifnet_t *ifp,
 	int i = 0, error;
 
 	m = mbuf_getwithdata(data, len);
-	error = npf_packet_handler(npf, &m, ifp, forw ? PFIL_OUT : PFIL_IN);
+	error = npfk_packet_handler(npf, &m, ifp, forw ? PFIL_OUT : PFIL_IN);
 	if (error) {
 		assert(m == NULL);
 		return error;
