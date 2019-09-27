@@ -104,6 +104,9 @@ typedef struct proc_param {
 
 enum { NPFCTL_PARSE_FILE, NPFCTL_PARSE_STRING };
 
+#define	NPF_IFNET_TABLE_PREF		".ifnet-"
+#define	NPF_IFNET_TABLE_PREFLEN		(sizeof(NPF_IFNET_TABLE_PREF) - 1)
+
 bool		join(char *, size_t, int, char **, const char *);
 void		yyerror(const char *, ...) __printflike(1, 2) __dead;
 void		npfctl_bpfjit(bool);
@@ -115,6 +118,7 @@ char *		npfctl_print_addrmask(int, const char *, const npf_addr_t *,
 		    npf_netmask_t);
 void		npfctl_note_interface(const char *);
 unsigned	npfctl_table_getid(const char *);
+const char *	npfctl_table_getname(nl_config_t *, unsigned, bool *);
 int		npfctl_protono(const char *);
 in_port_t	npfctl_portno(const char *);
 uint8_t		npfctl_icmpcode(int, uint8_t, const char *);
@@ -163,8 +167,8 @@ struct bpf_program *npfctl_bpf_complete(npf_bpf_t *);
 const void *	npfctl_bpf_bmarks(npf_bpf_t *, size_t *);
 void		npfctl_bpf_destroy(npf_bpf_t *);
 
-void		npfctl_bpf_group(npf_bpf_t *);
-void		npfctl_bpf_endgroup(npf_bpf_t *, bool);
+void		npfctl_bpf_group_enter(npf_bpf_t *);
+void		npfctl_bpf_group_exit(npf_bpf_t *, bool);
 
 void		npfctl_bpf_proto(npf_bpf_t *, sa_family_t, int);
 void		npfctl_bpf_cidr(npf_bpf_t *, u_int, sa_family_t,
@@ -206,6 +210,8 @@ void		npfctl_build_natseg(int, int, unsigned, const char *,
 		    const opt_proto_t *, const filt_opts_t *, unsigned);
 void		npfctl_build_maprset(const char *, int, const char *);
 void		npfctl_build_table(const char *, u_int, const char *);
+
+void		npfctl_setparam(const char *, int);
 
 /*
  * For the systems which do not define TH_ECE and TW_CRW.
