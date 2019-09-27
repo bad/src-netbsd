@@ -1,4 +1,4 @@
-#	$NetBSD: bsd.kmodule.mk,v 1.59 2017/01/11 12:19:43 joerg Exp $
+#	$NetBSD: bsd.kmodule.mk,v 1.62 2019/07/05 08:28:16 hannken Exp $
 
 # We are not building this with PIE
 MKPIE=no
@@ -11,6 +11,11 @@ CFLAGS+=	-g
 # Only need symbols for ctf, strip them after converting to CTF
 CTFFLAGS=	-L VERSION
 CTFMFLAGS=	-t -L VERSION
+# Keep symbols if built with "-g"
+.if !empty(COPTS:M*-g*)
+CTFFLAGS+=	-g
+CTFMFLAGS+=	-g
+.endif
 .endif
 
 .include <bsd.sys.mk>
@@ -105,39 +110,6 @@ PROG?=		${KMOD}.kmod
 ##### Build rules
 realall:	${PROG}
 
-.if (defined(USE_COMBINE) && ${USE_COMBINE} != "no" && !commands(${_P}) \
-   && !defined(NOCOMBINE.${_P}) && !defined(NOCOMBINE))
-.for f in ${SRCS:N*.h:N*.sh:N*.fth:C/\.[yl]$/.c/g}
-.if (${CPPFLAGS.$f:D1} == "1" || ${CPUFLAGS.$f:D2} == "2" \
-     || ${COPTS.$f:D3} == "3" || ${OBJCOPTS.$f:D4} == "4" \
-     || ${CXXFLAGS.$f:D5} == "5") \
-    || ("${f:M*.[cyl]}" == "" || commands(${f:R:S/$/.o/}))
-XOBJS+=		${f:R:S/$/.o/}
-.else
-XSRCS+=		${f}
-NODPSRCS+=	${f}
-.endif
-.endfor
-
-.if !empty(XOBJS)
-${XOBJS}:	${DPSRCS}
-.endif
-
-.if ${MKLDSCRIPT} == "yes"
-${KMODSCRIPT}: ${KMODSCRIPTSRC} ${XOBJS} $S/conf/mkldscript.sh
-	@rm -f ${.TARGET}
-	@OBJDUMP=${OBJDUMP} ${HOST_SH} $S/conf/mkldscript.sh \
-	    -t ${KMODSCRIPTSRC} ${XOBJS} > ${.TARGET}
-.endif
-
-${PROG}: ${XOBJS} ${XSRCS} ${DPSRCS} ${DPADD} ${KMODSCRIPT}
-	${CC} ${LDFLAGS} -nostdlib -MD -combine -r -Wl,-T,${KMODSCRIPT},-d \
-		-Wl,-Map=${.TARGET}.map \
-		-o ${.TARGET} ${CFLAGS} ${CPPFLAGS} ${XOBJS} \
-		${XSRCS:@.SRC.@${.ALLSRC:M*.c:M*${.SRC.}}@:O:u} && \
-	echo '.-include "${KMOD}.d"' > .depend
-
-.else
 OBJS+=		${SRCS:N*.h:N*.sh:R:S/$/.o/g}
 
 ${OBJS} ${LOBJS}: ${DPSRCS}
@@ -169,7 +141,7 @@ ${KMOD}_tramp.S: ${KMOD}_tmp.o ${ARCHDIR}/kmodtramp.awk ${ASM_H}
 	${OBJDUMP} --syms --reloc ${KMOD}_tmp.o | \
 		 ${TOOL_AWK} -f ${ARCHDIR}/kmodtramp.awk \
 		 > tmp.S && \
-	mv tmp.S ${.TARGET}
+	${MV} tmp.S ${.TARGET}
 
 ${PROG}: ${KMOD}_tmp.o ${KMOD}_tramp.o
 	${_MKTARGET_LINK}
@@ -190,7 +162,6 @@ ${PROG}: ${OBJS} ${DPADD} ${KMODSCRIPT}
 	${CC} ${LDFLAGS} -nostdlib -r -Wl,-T,${KMODSCRIPT},-d \
 		-Wl,-Map=${.TARGET}.map \
 		-o ${.TARGET} ${OBJS}
-.endif
 .endif
 .if defined(CTFMERGE)
 	${CTFMERGE} ${CTFMFLAGS} -o ${.TARGET} ${OBJS}

@@ -1,4 +1,4 @@
-/*	$NetBSD: ums.c,v 1.92 2018/12/29 06:34:16 maya Exp $	*/
+/*	$NetBSD: ums.c,v 1.94 2019/08/10 06:30:26 yhardy Exp $	*/
 
 /*
  * Copyright (c) 1998, 2017 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ums.c,v 1.92 2018/12/29 06:34:16 maya Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ums.c,v 1.94 2019/08/10 06:30:26 yhardy Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -99,7 +99,7 @@ void ums_attach(device_t, device_t, void *);
 void ums_childdet(device_t, device_t);
 int ums_detach(device_t, int);
 int ums_activate(device_t, enum devact);
-extern struct cfdriver ums_cd;
+
 CFATTACH_DECL2_NEW(ums, sizeof(struct ums_softc), ums_match, ums_attach,
     ums_detach, ums_activate, NULL, ums_childdet);
 
@@ -192,6 +192,7 @@ ums_attach(device_t parent, device_t self, void *aux)
 		}
 	}
 
+	tpcalib_init(&sc->sc_ms.sc_tpcalib);
 	hidms_attach(self, &sc->sc_ms, &ums_accessops);
 }
 

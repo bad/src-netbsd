@@ -1,4 +1,4 @@
-/*	$NetBSD: machdep.h,v 1.6 2018/10/18 09:01:51 skrll Exp $	*/
+/*	$NetBSD: machdep.h,v 1.8 2019/07/16 16:18:56 skrll Exp $	*/
 
 /*
  * Copyright (c) 2017 Ryo Shimizu <ryo@nerv.org>
@@ -70,6 +70,12 @@ extern char *booted_kernel;
 extern u_int arm_cpu_max;
 #endif
 
+/*
+ * note that we use void * as all the platforms have different ideas on what
+ * the structure is
+ */
+vaddr_t initarm(void *);
+
 vaddr_t initarm_common(vaddr_t, vsize_t, const struct boot_physmem *, size_t);
 void cpu_kernel_vm_init(paddr_t, psize_t);
 void uartputc(int);
@@ -103,8 +109,6 @@ void trap_el0_32sync(struct trapframe *);
 void trap_el0_32fiq(struct trapframe *);
 void trap_el0_32error(struct trapframe *);
 void interrupt(struct trapframe *);
-
-void ucas_ras_check(struct trapframe *);
 
 /* cpu_onfault */
 int cpu_set_onfault(struct faultbuf *) __returns_twice;

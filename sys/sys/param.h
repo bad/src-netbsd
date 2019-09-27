@@ -1,4 +1,4 @@
-/*	$NetBSD: param.h,v 1.577 2019/01/07 22:05:50 jdolecek Exp $	*/
+/*	$NetBSD: param.h,v 1.614 2019/09/27 00:32:03 pgoyette Exp $	*/
 
 /*-
  * Copyright (c) 1982, 1986, 1989, 1993
@@ -67,7 +67,7 @@
  *	2.99.9		(299000900)
  */
 
-#define	__NetBSD_Version__	899003000	/* NetBSD 8.99.30 */
+#define	__NetBSD_Version__	999001400	/* NetBSD 9.99.14 */
 
 #define __NetBSD_Prereq__(M,m,p) (((((M) * 100000000) + \
     (m) * 1000000) + (p) * 100) <= __NetBSD_Version__)
@@ -87,7 +87,7 @@
 #define	NetBSD	199905		/* NetBSD version (year & month). */
 
 /*
- * There macros determine if we are running in protected mode or not.
+ * These macros determine if we are running in protected mode or not.
  *   _HARDKERNEL: code uses kernel namespace and runs in hw priviledged mode
  *   _SOFTKERNEL: code uses kernel namespace but runs without hw priviledges
  */
@@ -253,9 +253,22 @@
  * any desired pointer type.
  *
  * ALIGNED_POINTER is a boolean macro that checks whether an address
- * is valid to fetch data elements of type t from on this architecture.
- * This does not reflect the optimal alignment, just the possibility
- * (within reasonable limits).
+ * is valid to fetch data elements of type t from on this architecture
+ * using ALIGNED_POINTER_LOAD.  This does not reflect the optimal
+ * alignment, just the possibility (within reasonable limits).
+ *
+ *	uint32_t x;
+ *	unsigned char *p = ...;
+ *
+ *	if (ALIGNED_POINTER(p, uint32_t)) {
+ *		uint32_t t;
+ *		ALIGNED_POINTER_LOAD(&t, p, uint32_t);
+ *		x = t;
+ *	} else {
+ *		uint32_t t;
+ *		memcpy(&t, p, sizeof(t));
+ *		x = t;
+ *	}
  *
  */
 #define ALIGNBYTES	__ALIGNBYTES
@@ -264,6 +277,9 @@
 #endif
 #ifndef ALIGNED_POINTER
 #define	ALIGNED_POINTER(p,t)	((((uintptr_t)(p)) & (sizeof(t) - 1)) == 0)
+#endif
+#ifndef ALIGNED_POINTER_LOAD
+#define	ALIGNED_POINTER_LOAD(q,p,t)	(*(q) = *((const t *)(p)))
 #endif
 
 /*

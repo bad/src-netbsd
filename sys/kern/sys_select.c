@@ -1,4 +1,4 @@
-/*	$NetBSD: sys_select.c,v 1.41 2018/01/30 07:52:23 ozaki-r Exp $	*/
+/*	$NetBSD: sys_select.c,v 1.48 2019/09/20 15:00:47 kamil Exp $	*/
 
 /*-
  * Copyright (c) 2007, 2008, 2009, 2010 The NetBSD Foundation, Inc.
@@ -84,7 +84,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sys_select.c,v 1.41 2018/01/30 07:52:23 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sys_select.c,v 1.48 2019/09/20 15:00:47 kamil Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -205,6 +205,10 @@ sys___select50(struct lwp *l, const struct sys___select50_args *uap,
 		error = copyin(SCARG(uap, tv), (void *)&atv, sizeof(atv));
 		if (error)
 			return error;
+
+		if (atv.tv_usec < 0 || atv.tv_usec >= 1000000)
+			return EINVAL;
+
 		TIMEVAL_TO_TIMESPEC(&atv, &ats);
 		ts = &ats;
 	}
@@ -391,7 +395,7 @@ selscan(char *bits, const int nfd, const size_t ni, register_t *retval)
 			ibits = *ibitp;
 			obits = 0;
 			while ((j = ffs(ibits)) && (fd = i + --j) < nfd) {
-				ibits &= ~(1 << j);
+				ibits &= ~(1U << j);
 				if ((fp = fd_getfile(fd)) == NULL)
 					return (EBADF);
 				/*
@@ -400,7 +404,7 @@ selscan(char *bits, const int nfd, const size_t ni, register_t *retval)
 				 */
 				curlwp->l_selrec = fd;
 				if ((*fp->f_ops->fo_poll)(fp, sel_flag[msk])) {
-					obits |= (1 << j);
+					obits |= (1U << j);
 					n++;
 				}
 				fd_putfile(fd);
@@ -488,15 +492,28 @@ pollcommon(register_t *retval, struct pollfd *u_fds, u_int nfds,
 	int		error;
 	size_t		ni;
 
-	if (nfds > 1000 + curlwp->l_fd->fd_dt->dt_nfiles) {
+	if (nfds > curlwp->l_proc->p_rlimit[RLIMIT_NOFILE].rlim_max + 1000) {
 		/*
-		 * Either the user passed in a very sparse 'fds' or junk!
-		 * The kmem_alloc() call below would be bad news.
-		 * We could process the 'fds' array in chunks, but that
+		 * Prevent userland from causing over-allocation.
+		 * Raising the default limit too high can still cause
+		 * a lot of memory to be allocated, but this also means
+		 * that the file descriptor array will also be large.
+		 *
+		 * To reduce the memory requirements here, we could 
+		 * process the 'fds' array in chunks, but that
 		 * is a lot of code that isn't normally useful.
 		 * (Or just move the copyin/out into pollscan().)
+		 *
 		 * Historically the code silently truncated 'fds' to
 		 * dt_nfiles entries - but that does cause issues.
+		 *
+		 * Using the max limit equivalent to sysctl
+		 * kern.maxfiles is the moral equivalent of OPEN_MAX
+		 * as specified by POSIX.
+		 *
+		 * We add a slop of 1000 in case the resource limit was
+		 * changed after opening descriptors or the same descriptor
+		 * was specified more than once.
 		 */
 		return EINVAL;
 	}
@@ -741,7 +758,7 @@ selnotify(struct selinfo *sip, int events, long knhint)
 		sip->sel_collision = 0;
 		do {
 			index = ffs(mask) - 1;
-			mask &= ~(1 << index);
+			mask &= ~(1U << index);
 			sc = selcluster[index];
 			lock = sc->sc_lock;
 			mutex_spin_enter(lock);
@@ -813,7 +830,7 @@ selsysinit(struct cpu_info *ci)
 		sc->sc_lock = mutex_obj_alloc(MUTEX_DEFAULT, IPL_SCHED);
 		sleepq_init(&sc->sc_sleepq);
 		sc->sc_ncoll = 0;
-		sc->sc_mask = (1 << index);
+		sc->sc_mask = __BIT(index);
 		selcluster[index] = sc;
 	}
 	ci->ci_data.cpu_selcluster = sc;

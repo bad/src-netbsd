@@ -1,4 +1,4 @@
-/* $NetBSD: dwc_gmac_var.h,v 1.12 2018/10/08 17:09:31 martin Exp $ */
+/* $NetBSD: dwc_gmac_var.h,v 1.16 2019/09/13 07:55:06 msaitoh Exp $ */
 
 /*-
  * Copyright (c) 2013, 2014 The NetBSD Foundation, Inc.
@@ -29,6 +29,20 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _KERNEL_OPT
+#include "opt_net_mpsafe.h"
+#endif
+
+/* Use DWCGMAC_MPSAFE inside the front-ends for interrupt handlers.  */
+#ifdef NET_MPSAFE
+#define DWCGMAC_MPSAFE	1
+#endif
+
+#ifdef DWCGMAC_MPSAFE
+#define DWCGMAC_FDT_INTR_MPSAFE FDT_INTR_MPSAFE
+#else
+#define DWCGMAC_FDT_INTR_MPSAFE 0
+#endif
 
 /*
  * We could use 1024 DMA descriptors to fill up an 8k page (each is 16 byte).
@@ -106,10 +120,10 @@ struct dwc_gmac_softc {
 	struct dwc_gmac_rx_ring sc_rxq;
 	struct dwc_gmac_tx_ring sc_txq;
 	const struct dwc_gmac_desc_methods *sc_descm;
-	short sc_if_flags;			/* shadow of ether flags */
+	u_short sc_if_flags;			/* shadow of ether flags */
 	uint16_t sc_mii_clk;
 	bool sc_stopping;
-
+	krndsource_t rnd_source;
 	kmutex_t *sc_lock;			/* lock for softc operations */
 
 	struct if_percpuq *sc_ipq;		/* softint-based input queues */
@@ -117,5 +131,6 @@ struct dwc_gmac_softc {
 	void (*sc_set_speed)(struct dwc_gmac_softc *, int);
 };
 
-int dwc_gmac_attach(struct dwc_gmac_softc*, uint32_t /*mii_clk*/);
+int dwc_gmac_attach(struct dwc_gmac_softc*, int /*phy_id*/,
+    uint32_t /*mii_clk*/);
 int dwc_gmac_intr(struct dwc_gmac_softc*);

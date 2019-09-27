@@ -1,4 +1,4 @@
-/*	$NetBSD: urio.c,v 1.47 2018/09/03 16:29:34 riastradh Exp $	*/
+/*	$NetBSD: urio.c,v 1.49 2019/09/14 12:41:32 maxv Exp $	*/
 
 /*
  * Copyright (c) 2000 The NetBSD Foundation, Inc.
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: urio.c,v 1.47 2018/09/03 16:29:34 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: urio.c,v 1.49 2019/09/14 12:41:32 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -61,6 +61,8 @@ __KERNEL_RCSID(0, "$NetBSD: urio.c,v 1.47 2018/09/03 16:29:34 riastradh Exp $");
 
 #include <dev/usb/usbdevs.h>
 #include <dev/usb/urio.h>
+
+#include "ioconf.h"
 
 #ifdef URIO_DEBUG
 #define DPRINTF(x)	if (uriodebug) printf x
@@ -104,6 +106,10 @@ struct urio_softc {
 	device_t		sc_dev;
 	struct usbd_device *	sc_udev;
 	struct usbd_interface *	sc_iface;
+	enum {
+		URIO_INIT_NONE,
+		URIO_INIT_INITED
+	} sc_init_state;
 
 	int			sc_in_addr;
 	struct usbd_pipe *	sc_in_pipe;
@@ -130,7 +136,7 @@ int	urio_match(device_t, cfdata_t, void *);
 void	urio_attach(device_t, device_t, void *);
 int	urio_detach(device_t, int);
 int	urio_activate(device_t, enum devact);
-extern struct cfdriver urio_cd;
+
 CFATTACH_DECL_NEW(urio, sizeof(struct urio_softc), urio_match, urio_attach,
     urio_detach, urio_activate);
 
@@ -161,6 +167,7 @@ urio_attach(device_t parent, device_t self, void *aux)
 	DPRINTFN(10,("urio_attach: sc=%p\n", sc));
 
 	sc->sc_dev = self;
+	sc->sc_init_state = URIO_INIT_NONE;
 
 	aprint_naive("\n");
 	aprint_normal("\n");
@@ -213,6 +220,8 @@ urio_attach(device_t parent, device_t self, void *aux)
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev, sc->sc_dev);
 
+	sc->sc_init_state = URIO_INIT_INITED;
+
 	return;
 }
 
@@ -251,6 +260,9 @@ urio_detach(device_t self, int flags)
 	/* Nuke the vnodes for any open instances (calls close). */
 	mn = device_unit(self);
 	vdevgone(maj, mn, mn, VCHR);
+
+	if (sc->sc_init_state < URIO_INIT_INITED)
+		return 0;
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev, sc->sc_dev);
 

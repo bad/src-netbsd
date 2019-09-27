@@ -1,4 +1,4 @@
-/*	$NetBSD: frameasm.h,v 1.41 2018/08/12 13:31:16 maxv Exp $	*/
+/*	$NetBSD: frameasm.h,v 1.44 2019/05/18 13:32:12 maxv Exp $	*/
 
 #ifndef _AMD64_MACHINE_FRAMEASM_H
 #define _AMD64_MACHINE_FRAMEASM_H
@@ -13,7 +13,7 @@
  * and system calls. Currently all the same; will diverge later.
  */
 
-#ifdef XEN
+#ifdef XENPV
 #define HYPERVISOR_iret hypercall_page + (__HYPERVISOR_iret * 32)
 /* Xen do not need swapgs, done by hypervisor */
 #define swapgs
@@ -29,7 +29,7 @@
  	movq CPUVAR(VCPU),%r ## temp_reg ;			\
 	movb $0,EVTCHN_UPCALL_MASK(%r ## temp_reg);
 
-#else /* XEN */
+#else /* XENPV */
 #define	XEN_ONLY2(x,y)
 #define	NOT_XEN(x)	x
 #define CLI(temp_reg) cli
@@ -48,6 +48,7 @@
 #define HP_NAME_IBRS_LEAVE	10
 #define HP_NAME_SVS_ENTER_NMI	11
 #define HP_NAME_SVS_LEAVE_NMI	12
+#define HP_NAME_MDS_LEAVE	13
 
 #define HOTPATCH(name, size) \
 123:						; \
@@ -69,7 +70,7 @@
  * IBRS
  */
 
-#define IBRS_ENTER_BYTES	17
+#define IBRS_ENTER_BYTES	12
 #define IBRS_ENTER \
 	HOTPATCH(HP_NAME_IBRS_ENTER, IBRS_ENTER_BYTES)		; \
 	NOIBRS_ENTER
@@ -77,13 +78,25 @@
 	.byte 0xEB, (IBRS_ENTER_BYTES-2)	/* jmp */	; \
 	.fill	(IBRS_ENTER_BYTES-2),1,0xCC
 
-#define IBRS_LEAVE_BYTES	21
+#define IBRS_LEAVE_BYTES	12
 #define IBRS_LEAVE \
 	HOTPATCH(HP_NAME_IBRS_LEAVE, IBRS_LEAVE_BYTES)		; \
 	NOIBRS_LEAVE
 #define NOIBRS_LEAVE \
 	.byte 0xEB, (IBRS_LEAVE_BYTES-2)	/* jmp */	; \
 	.fill	(IBRS_LEAVE_BYTES-2),1,0xCC
+
+/*
+ * MDS
+ */
+
+#define MDS_LEAVE_BYTES	10
+#define MDS_LEAVE \
+	HOTPATCH(HP_NAME_MDS_LEAVE, MDS_LEAVE_BYTES)		; \
+	NOMDS_LEAVE
+#define NOMDS_LEAVE \
+	.byte 0xEB, (MDS_LEAVE_BYTES-2)	/* jmp */		; \
+	.fill	(MDS_LEAVE_BYTES-2),1,0xCC
 
 #define	SWAPGS	NOT_XEN(swapgs)
 
@@ -143,7 +156,7 @@
 	HOTPATCH(HP_NAME_SVS_ENTER, SVS_ENTER_BYTES)	; \
 	NOSVS_ENTER
 
-#define SVS_LEAVE_BYTES	31
+#define SVS_LEAVE_BYTES	21
 #define NOSVS_LEAVE \
 	.byte 0xEB, (SVS_LEAVE_BYTES-2)	/* jmp */	; \
 	.fill	(SVS_LEAVE_BYTES-2),1,0xCC

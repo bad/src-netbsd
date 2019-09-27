@@ -1,4 +1,4 @@
-/*	$NetBSD: vmparam.h,v 1.49 2018/10/29 19:43:16 maya Exp $	*/
+/*	$NetBSD: vmparam.h,v 1.51 2019/02/11 14:59:32 cherry Exp $	*/
 
 /*-
  * Copyright (c) 1990 The Regents of the University of California.
@@ -125,7 +125,7 @@
  * MIN = VA_SIGN_NEG(L4_SLOT_KERN * NBPD_L4)
  * MAX = MIN + NKL4_MAX_ENTRIES * NBPD_L4
  */
-#ifndef XEN
+#ifndef XENPV
 #define VM_MIN_KERNEL_ADDRESS_DEFAULT	0xffff800000000000
 #define VM_MAX_KERNEL_ADDRESS_DEFAULT	0xffffa00000000000
 #else
@@ -159,7 +159,7 @@ extern vaddr_t vm_max_kernel_address;
 /* virtual sizes (bytes) for various kernel submaps */
 #define VM_PHYS_SIZE		(USRIOSIZE*PAGE_SIZE)
 
-#define VM_PHYSSEG_MAX		32	/* 1 "hole" + 31 free lists */
+#define VM_PHYSSEG_MAX		64	/* 1 "hole" + 63 free lists */
 #define VM_PHYSSEG_STRAT	VM_PSTRAT_BIGFIRST
 
 #define	VM_NFREELIST		6

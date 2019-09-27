@@ -1,4 +1,4 @@
-/*	$NetBSD: sockstat.c,v 1.19 2017/01/14 01:01:48 christos Exp $ */
+/*	$NetBSD: sockstat.c,v 1.21 2019/08/18 04:13:24 kamil Exp $ */
 
 /*
  * Copyright (c) 2005 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
 
 #include <sys/cdefs.h>
 #ifndef lint
-__RCSID("$NetBSD: sockstat.c,v 1.19 2017/01/14 01:01:48 christos Exp $");
+__RCSID("$NetBSD: sockstat.c,v 1.21 2019/08/18 04:13:24 kamil Exp $");
 #endif
 
 #define _KMEMUSER
@@ -251,6 +251,7 @@ parse_ports(const char *l)
 		switch (*e) {
 		case ',':
 			e++;
+			/* FALLTHROUGH */
 		case '\0':
 			bit_set(portmap, i);
 			s = e;
@@ -296,7 +297,7 @@ get_sockets(const char *mib)
 	u_int namelen;
 
 	sz = CTL_MAXNAME;
-	rc = sysctlnametomib(mib, &name[0], &sz);
+	rc = prog_sysctlnametomib(mib, &name[0], &sz);
 	if (rc == -1) {
 		if (errno == ENOENT)
 			return;
@@ -323,7 +324,7 @@ get_files(void)
 	u_int namelen;
 
 	sz = CTL_MAXNAME;
-	rc = sysctlnametomib("kern.file2", &name[0], &sz);
+	rc = prog_sysctlnametomib("kern.file2", &name[0], &sz);
 	if (rc == -1)
 		err(1, "sysctlnametomib");
 	namelen = sz;

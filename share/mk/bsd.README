@@ -1,4 +1,4 @@
-#	$NetBSD: bsd.README,v 1.387 2019/01/01 19:06:38 christos Exp $
+#	$NetBSD: bsd.README,v 1.394 2019/08/10 12:46:38 christos Exp $
 #	@(#)bsd.README	8.2 (Berkeley) 4/2/94
 
 This is the README file for the make "include" files for the NetBSD
@@ -128,7 +128,7 @@ MKBINUTILS	If "no", don't build binutils (gas, ld, etc and libbfd,
 
 MKBSDTAR	If "yes", use the libarchive based cpio and tar instead of
 		the pax frontends.
-		Default: no
+		Default: yes
 
 MKCATPAGES	If "no", don't build or install the catman pages.
 		Default: no
@@ -317,6 +317,16 @@ MKLINKLIB	If "no", act as "MKLINT=no MKPICINSTALL=no MKPROFILE=no".
 MKLINT		If "no", don't build or install the lint libraries.
 		Default: yes
 
+MKLLVM		If "yes", build and install clang as host tool and target
+		compiler.  Use as system compiler is enabled with HAVE_LLVM
+		(see below for details).
+		Default: no
+
+MKLLVMRT	If "yes", build the LLVM PIC libraries necessary for the
+		AMDGPU backend and the native JIT of the target architecture,
+		if supported.
+		Default: no, enabled automatically with HAVE_MESA_VER=18.
+
 MKLVM		If "no", don't build or install the logical volume manager
 		and device mapper tools and libraries
 		Default: yes
@@ -341,6 +351,10 @@ MKMDNS		If "no", disables building of mDNS infrastructure
 MKNLS		If "no", don't build or install the NLS files and locale
 		definition files.
 		Default: yes
+
+MKNOUVEAUFIRMWARE If "yes", install the /libdata/firmware/nouveau directory,
+		which is necessary for the nouveau DRM driver.
+		Default: yes on i386 and amd64, no elsewhere.
 
 MKNPF		If "no", don't build or install the NPF and its modules.
 		Default: yes
@@ -396,7 +410,7 @@ MKPOSTFIX	If "no", don't build or install postfix(1).
 MKPROFILE	If "no", don't build or install the profiling (*_p.a) libraries.
 		Default: yes
 
-MKRADEONFIRMWARE If "no", install the /libdata/firmware/radeon directory,
+MKRADEONFIRMWARE If "yes", install the /libdata/firmware/radeon directory,
 		which is necessary for the radeon DRM driver.
 		Default: yes on i386 and amd64, no elsewhere.
 
@@ -1740,24 +1754,31 @@ DPADD		Additional dependencies for the program.  Usually used for
 
 		The following X-Windows libraries are predefined for DPADD:
 
+		LIBDPS?=		${DESTDIR}/usr/X11R7/lib/libdps.a
+		LIBFNTSTUBS?=		${DESTDIR}/usr/X11R7/lib/libfntstubs.a
+		LIBFONTCACHE?=		${DESTDIR}/usr/X11R7/lib/libfontcache.a
+		LIBFONTCONFIG?=		${DESTDIR}/usr/X11R7/lib/libfontconfig.a
+		LIBFONTENC?=		${DESTDIR}/usr/X11R7/lib/libfontenc.a
+		LIBFREETYPE?=		${DESTDIR}/usr/X11R7/lib/libfreetype.a
 		LIBFS?=			${DESTDIR}/usr/X11R7/lib/libFS.a
 		LIBGL?=			${DESTDIR}/usr/X11R7/lib/libGL.a
 		LIBGLU?=		${DESTDIR}/usr/X11R7/lib/libGLU.a
 		LIBICE?=		${DESTDIR}/usr/X11R7/lib/libICE.a
+		LIBLBXUTIL?=		${DESTDIR}/usr/X11R7/lib/liblbxutil.a
 		LIBSM?=			${DESTDIR}/usr/X11R7/lib/libSM.a
 		LIBX11?=		${DESTDIR}/usr/X11R7/lib/libX11.a
 		LIBX11_XCB?=		${DESTDIR}/usr/X11R7/lib/libX11-xcb.a
-		LIBXTRAP?=		${DESTDIR}/usr/X11R7/lib/libXTrap.a
 		LIBXAU?=		${DESTDIR}/usr/X11R7/lib/libXau.a
 		LIBXAW?=		${DESTDIR}/usr/X11R7/lib/libXaw.a
 		LIBXCB?=		${DESTDIR}/usr/X11R7/lib/libxcb.a
 		LIBXDMCP?=		${DESTDIR}/usr/X11R7/lib/libXdmcp.a
 		LIBXEXT?=		${DESTDIR}/usr/X11R7/lib/libXext.a
-		LIBXFONT?=		${DESTDIR}/usr/X11R7/lib/libXfont.a
 		LIBXFONT2?=		${DESTDIR}/usr/X11R7/lib/libXfont2.a
+		LIBXFONT?=		${DESTDIR}/usr/X11R7/lib/libXfont.a
 		LIBXFT?=		${DESTDIR}/usr/X11R7/lib/libXft.a
 		LIBXI?=			${DESTDIR}/usr/X11R7/lib/libXi.a
 		LIBXINERAMA?=		${DESTDIR}/usr/X11R7/lib/libXinerama.a
+		LIBXKBFILE?=		${DESTDIR}/usr/X11R7/lib/libxkbfile.a
 		LIBXMU?=		${DESTDIR}/usr/X11R7/lib/libXmu.a
 		LIBXMUU?=		${DESTDIR}/usr/X11R7/lib/libXmuu.a
 		LIBXPM?=		${DESTDIR}/usr/X11R7/lib/libXpm.a
@@ -1765,18 +1786,12 @@ DPADD		Additional dependencies for the program.  Usually used for
 		LIBXRENDER?=		${DESTDIR}/usr/X11R7/lib/libXrender.a
 		LIBXSS?=		${DESTDIR}/usr/X11R7/lib/libXss.a
 		LIBXT?=			${DESTDIR}/usr/X11R7/lib/libXt.a
+		LIBXTRAP?=		${DESTDIR}/usr/X11R7/lib/libXTrap.a
 		LIBXTST?=		${DESTDIR}/usr/X11R7/lib/libXtst.a
 		LIBXV?=			${DESTDIR}/usr/X11R7/lib/libXv.a
 		LIBXXF86DGA?=		${DESTDIR}/usr/X11R7/lib/libXxf86dga.a
 		LIBXXF86MISC?=		${DESTDIR}/usr/X11R7/lib/libXxf86misc.a
 		LIBXXF86VM?=		${DESTDIR}/usr/X11R7/lib/libXxf86vm.a
-		LIBDPS?=		${DESTDIR}/usr/X11R7/lib/libdps.a
-		LIBFNTSTUBS?=		${DESTDIR}/usr/X11R7/lib/libfntstubs.a
-		LIBFONTCONFIG?=		${DESTDIR}/usr/X11R7/lib/libfontconfig.a
-		LIBFONTENC?=		${DESTDIR}/usr/X11R7/lib/libfontenc.a
-		LIBFREETYPE?=		${DESTDIR}/usr/X11R7/lib/libfreetype.a
-		LIBLBXUTIL?=		${DESTDIR}/usr/X11R7/lib/liblbxutil.a
-		LIBXKBFILE?=		${DESTDIR}/usr/X11R7/lib/libxkbfile.a
 
 SHAREDSTRINGS	If defined, a new .c.o rule is used that results in shared
 		strings, using xstr(1). Note that this will not work with
@@ -2031,7 +2046,7 @@ LDFLAGS		Options to ${CC} during the link process.  []
 
 LINT		C program verifier.  [lint]
 
-LINTFLAGS	Options to ${LINT}.  [-chapbxzgFS]
+LINTFLAGS	Options to ${LINT}.  [-chapbrxzgFS]
 
 LORDER		List dependencies for object files.  [lorder]
 
@@ -2116,7 +2131,7 @@ HOST_COMPILE.cc		The host c++ compiler line with flags
 
 HOST_CPP		The host c pre-processor
 
-HOST_CPPFLAGS		The cost c pre-processor flags
+HOST_CPPFLAGS		The host c pre-processor flags
 
 HOST_CXX		The host c++ compiler
 

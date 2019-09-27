@@ -1,6 +1,7 @@
-/* $NetBSD: efifdt.c,v 1.14 2018/11/15 23:52:33 jmcneill Exp $ */
+/* $NetBSD: efifdt.c,v 1.19 2019/08/30 00:01:33 jmcneill Exp $ */
 
 /*-
+ * Copyright (c) 2019 Jason R. Thorpe
  * Copyright (c) 2018 Jared McNeill <jmcneill@invisible.ca>
  * All rights reserved.
  *
@@ -87,6 +88,53 @@ efi_fdt_size(void)
 	return fdt_data == NULL ? 0 : fdt_totalsize(fdt_data);
 }
 
+bool
+efi_fdt_overlay_is_compatible(void *dtbo)
+{
+	const int system_root = fdt_path_offset(fdt_data, "/");
+	const int overlay_root = fdt_path_offset(dtbo, "/");
+
+	if (system_root < 0 || overlay_root < 0)
+		return false;
+
+	const int system_ncompat = fdt_stringlist_count(fdt_data, system_root,
+	    "compatible");
+	const int overlay_ncompat = fdt_stringlist_count(dtbo, overlay_root,
+	    "compatible");
+
+	if (system_ncompat <= 0 || overlay_ncompat <= 0)
+		return false;
+
+	const char *system_compatible, *overlay_compatible;
+	int si, oi;
+
+	for (si = 0; si < system_ncompat; si++) {
+		system_compatible = fdt_stringlist_get(fdt_data,
+		    system_root, "compatible", si, NULL);
+		if (system_compatible == NULL)
+			continue;
+		for (oi = 0; oi < overlay_ncompat; oi++) {
+			overlay_compatible = fdt_stringlist_get(dtbo,
+			    overlay_root, "compatible", oi, NULL);
+			if (overlay_compatible == NULL)
+				continue;
+			if (strcmp(system_compatible, overlay_compatible) == 0)
+				return true;
+		}
+	}
+
+	return false;
+}
+
+int
+efi_fdt_overlay_apply(void *dtbo, int *fdterr)
+{
+	int err = fdt_overlay_apply(fdt_data, dtbo);
+	if (fdterr)
+		*fdterr = err;
+	return err == 0 ? 0 : EIO;
+}
+
 void
 efi_fdt_init(u_long addr, u_long len)
 {
@@ -137,13 +185,19 @@ efi_fdt_memory_map(void)
 	EFI_MEMORY_DESCRIPTOR *md, *memmap;
 	UINT32 descver;
 	UINT64 phys_start, phys_size;
-	int n, memory;
+	int n, memory, chosen;
 
 	memory = fdt_path_offset(fdt_data, FDT_MEMORY_NODE_PATH);
 	if (memory < 0)
 		memory = fdt_add_subnode(fdt_data, fdt_path_offset(fdt_data, "/"), FDT_MEMORY_NODE_NAME);
 	if (memory < 0)
 		panic("FDT: Failed to create " FDT_MEMORY_NODE_PATH " node");
+
+	chosen = fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH);
+	if (chosen < 0)
+		chosen = fdt_add_subnode(fdt_data, fdt_path_offset(fdt_data, "/"), FDT_CHOSEN_NODE_NAME);
+	if (chosen < 0)
+		panic("FDT: Failed to create " FDT_CHOSEN_NODE_PATH " node");
 
 	fdt_delprop(fdt_data, memory, "reg");
 
@@ -152,8 +206,14 @@ efi_fdt_memory_map(void)
 
 	memmap = LibMemoryMap(&nentries, &mapkey, &descsize, &descver);
 	for (n = 0, md = memmap; n < nentries; n++, md = NextMemoryDescriptor(md, descsize)) {
+		fdt_appendprop_u32(fdt_data, fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "netbsd,uefi-memmap", md->Type);
+		fdt_appendprop_u64(fdt_data, fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "netbsd,uefi-memmap", md->PhysicalStart);
+		fdt_appendprop_u64(fdt_data, fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "netbsd,uefi-memmap", md->NumberOfPages);
+		fdt_appendprop_u64(fdt_data, fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "netbsd,uefi-memmap", md->Attribute);
+
 		if ((md->Attribute & EFI_MEMORY_RUNTIME) != 0)
 			continue;
+
 		if ((md->Attribute & EFI_MEMORY_WB) == 0)
 			continue;
 		if (!FDT_MEMORY_USABLE(md))
@@ -187,6 +247,77 @@ efi_fdt_memory_map(void)
 		else
 			fdt_appendprop_u64(fdt_data, fdt_path_offset(fdt_data, FDT_MEMORY_NODE_PATH),
 			    "reg", phys_size);
+	}
+}
+
+void
+efi_fdt_gop(void)
+{
+	EFI_STATUS status;
+	EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
+	EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *mode;
+	EFI_HANDLE *gop_handle;
+	UINTN ngop_handle, n;
+	char buf[48];
+	int fb;
+
+	status = LibLocateHandle(ByProtocol, &GraphicsOutputProtocol, NULL, &ngop_handle, &gop_handle);
+	if (EFI_ERROR(status) || ngop_handle == 0)
+		return;
+
+	for (n = 0; n < ngop_handle; n++) {
+		status = uefi_call_wrapper(BS->HandleProtocol, 3, gop_handle[n], &GraphicsOutputProtocol, (void **)&gop);
+		if (EFI_ERROR(status))
+			continue;
+
+		mode = gop->Mode;
+		if (mode == NULL)
+			continue;
+
+#ifdef EFIBOOT_DEBUG
+		printf("GOP: FB @ 0x%lx size 0x%lx\n", mode->FrameBufferBase, mode->FrameBufferSize);
+		printf("GOP: Version %d\n", mode->Info->Version);
+		printf("GOP: HRes %d VRes %d\n", mode->Info->HorizontalResolution, mode->Info->VerticalResolution);
+		printf("GOP: PixelFormat %d\n", mode->Info->PixelFormat);
+		printf("GOP: PixelBitmask R 0x%x G 0x%x B 0x%x Res 0x%x\n",
+		    mode->Info->PixelInformation.RedMask,
+		    mode->Info->PixelInformation.GreenMask,
+		    mode->Info->PixelInformation.BlueMask,
+		    mode->Info->PixelInformation.ReservedMask);
+		printf("GOP: Pixels per scanline %d\n", mode->Info->PixelsPerScanLine);
+#endif
+
+		if (mode->Info->PixelFormat == PixelBltOnly) {
+			printf("GOP: PixelBltOnly pixel format not supported\n");
+			continue;
+		}
+
+		fdt_setprop_u32(fdt_data,
+		    fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "#address-cells", 2);
+		fdt_setprop_u32(fdt_data,
+		    fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "#size-cells", 2);
+		fdt_setprop_empty(fdt_data,
+		    fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), "ranges");
+
+		snprintf(buf, sizeof(buf), "framebuffer@%" PRIx64, mode->FrameBufferBase);
+		fb = fdt_add_subnode(fdt_data, fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH), buf);
+		if (fb < 0)
+			panic("FDT: Failed to create framebuffer node");
+
+		fdt_appendprop_string(fdt_data, fb, "compatible", "simple-framebuffer");
+		fdt_appendprop_string(fdt_data, fb, "status", "okay");
+		fdt_appendprop_u64(fdt_data, fb, "reg", mode->FrameBufferBase);
+		fdt_appendprop_u64(fdt_data, fb, "reg", mode->FrameBufferSize);
+		fdt_appendprop_u32(fdt_data, fb, "width", mode->Info->HorizontalResolution);
+		fdt_appendprop_u32(fdt_data, fb, "height", mode->Info->VerticalResolution);
+		fdt_appendprop_u32(fdt_data, fb, "stride", mode->Info->PixelsPerScanLine * 4);	/* XXX */
+		fdt_appendprop_string(fdt_data, fb, "format", "a8b8g8r8");
+
+		snprintf(buf, sizeof(buf), "/chosen/framebuffer@%" PRIx64, mode->FrameBufferBase);
+		fdt_setprop_string(fdt_data, fdt_path_offset(fdt_data, FDT_CHOSEN_NODE_PATH),
+		    "stdout-path", buf);
+
+		return;
 	}
 }
 

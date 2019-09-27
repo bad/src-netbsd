@@ -1,5 +1,3 @@
-/*	$NetBSD$	*/
-
 /*
  * Public Domain.
  */
@@ -26,6 +24,8 @@
 #include <net/ethertypes.h>
 #endif
 
+#define	IFNAME_DUMMY	"npftest999"
+
 /* Test interfaces and IP addresses. */
 #define	IFNAME_EXT	"npftest0"
 #define	IFNAME_INT	"npftest1"
@@ -43,10 +43,14 @@
 #define	REMOTE_IP1	"192.0.2.101"
 #define	REMOTE_IP2	"192.0.2.102"
 #define	REMOTE_IP3	"192.0.2.103"
+#define	REMOTE_IP4	"192.0.2.104"
 
 #define	LOCAL_IP6	"fd01:203:405:1::1234"
 #define	REMOTE_IP6	"2001:db8:fefe::1010"
 #define	EXPECTED_IP6	"2001:db8:1:d550::1234"
+
+#define	NET_A_IP1	"10.100.7.126"
+#define	NET_B_IP1	"10.255.7.126"
 
 #if defined(_NPF_STANDALONE)
 
@@ -60,10 +64,9 @@ struct mbuf {
 	struct {
 		int	len;
 	} m_pkthdr;
-	char *		m_data;
-	char		m_data0[MLEN];
+	void *		m_data;
+	unsigned char	m_data0[MLEN];
 };
-
 
 #define	MT_FREE			0
 #define	M_UNWRITABLE(m, l)	false
@@ -78,7 +81,11 @@ struct mbuf {
 
 #endif
 
+#define	CHECK_TRUE(x)	\
+    if (!(x)) { printf("FAIL: %s line %d\n", __func__, __LINE__); return 0; }
+
 const npf_mbufops_t	npftest_mbufops;
+const npf_ifops_t	npftest_ifops;
 
 struct mbuf *	npfkern_m_get(int, int);
 size_t		npfkern_m_length(const struct mbuf *);
@@ -104,12 +111,17 @@ void *		mbuf_return_hdrs(struct mbuf *, bool, struct ip **);
 void *		mbuf_return_hdrs6(struct mbuf *, struct ip6_hdr **);
 void		mbuf_icmp_append(struct mbuf *, struct mbuf *);
 
+struct mbuf *	mbuf_get_pkt(int, int, const char *, const char *, int, int);
+npf_cache_t *	get_cached_pkt(struct mbuf *, const char *);
+void		put_cached_pkt(npf_cache_t *);
+
 bool		npf_nbuf_test(bool);
 bool		npf_bpf_test(bool);
 bool		npf_table_test(bool, void *, size_t);
 bool		npf_state_test(bool);
 
 bool		npf_rule_test(bool);
+bool		npf_conn_test(bool);
 bool		npf_nat_test(bool);
 
 int		npf_inet_pton(int, const char *, void *);

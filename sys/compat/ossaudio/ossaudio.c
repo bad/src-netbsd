@@ -1,4 +1,4 @@
-/*	$NetBSD: ossaudio.c,v 1.70 2017/03/24 14:32:29 nat Exp $	*/
+/*	$NetBSD: ossaudio.c,v 1.76 2019/09/26 01:37:52 christos Exp $	*/
 
 /*-
  * Copyright (c) 1997, 2008 The NetBSD Foundation, Inc.
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ossaudio.c,v 1.70 2017/03/24 14:32:29 nat Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ossaudio.c,v 1.76 2019/09/26 01:37:52 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/proc.h>
@@ -230,7 +230,7 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 			     __func__, idat, error));
 			goto out;
 		}
-		/* fall into ... */
+		/* FALLTHROUGH */
 	case OSS_SOUND_PCM_READ_RATE:
 		error = ioctlf(fp, AUDIO_GETBUFINFO, &tmpinfo);
 		if (error) {
@@ -372,7 +372,7 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 			     __func__, error));
 			goto out;
 		}
-		/* fall into ... */
+		/* FALLTHROUGH */
 	case OSS_SOUND_PCM_READ_BITS:
 		error = ioctlf(fp, AUDIO_GETBUFINFO, &tmpinfo);
 		if (error) {
@@ -449,7 +449,7 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 			     __func__, error));
 			goto out;
 		}
-		/* fall into ... */
+		/* FALLTHROUGH */
 	case OSS_SOUND_PCM_READ_CHANNELS:
 		error = ioctlf(fp, AUDIO_GETBUFINFO, &tmpinfo);
 		if (error) {
@@ -509,12 +509,12 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 		AUDIO_INITINFO(&tmpinfo);
 		error = copyin(SCARG(uap, data), &idat, sizeof idat);
 		if (error) {
-			DPRINTF(("%s: DSP_SETFRAGMENT %d\n",
+			DPRINTF(("%s: SNDCTL_DSP_SETFRAGMENT %d\n",
 			     __func__, error));
 			goto out;
 		}
 		if ((idat & 0xffff) < 4 || (idat & 0xffff) > 17) {
-			DPRINTF(("%s: DSP_SETFRAGMENT bad ival%d\n",
+			DPRINTF(("%s: SNDCTL_DSP_SETFRAGMENT bad ival%d\n",
 			     __func__, idat));
 			error = EINVAL;
 			goto out;
@@ -619,11 +619,12 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 		}
 		setblocksize(fp, &tmpinfo);
 		bufinfo.fragsize = tmpinfo.blocksize;
-		bufinfo.fragments = (tmpinfo.hiwat * tmpinfo.blocksize -
-		    (tmpinfo.play.seek + tmpinfo.blocksize -1)) /
+		bufinfo.fragments = tmpinfo.hiwat -
+		    (tmpinfo.play.seek + tmpinfo.blocksize - 1) /
 		    tmpinfo.blocksize;
 		bufinfo.fragstotal = tmpinfo.hiwat;
-		bufinfo.bytes = bufinfo.fragments * tmpinfo.blocksize;
+		bufinfo.bytes =
+		    tmpinfo.hiwat * tmpinfo.blocksize - tmpinfo.play.seek;
 		error = copyout(&bufinfo, SCARG(uap, data), sizeof bufinfo);
 		if (error) {
 			DPRINTF(("%s: SNDCTL_DSP_GETOSPACE = %d\n",
@@ -641,8 +642,9 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 		setblocksize(fp, &tmpinfo);
 		bufinfo.fragsize = tmpinfo.blocksize;
 		bufinfo.fragments = tmpinfo.record.seek / tmpinfo.blocksize;
-		bufinfo.fragstotal = tmpinfo.hiwat;
-		bufinfo.bytes = bufinfo.fragments * tmpinfo.blocksize;
+		bufinfo.fragstotal =
+		    tmpinfo.record.buffer_size / tmpinfo.blocksize;
+		bufinfo.bytes = tmpinfo.record.seek;
 		error = copyout(&bufinfo, SCARG(uap, data), sizeof bufinfo);
 		if (error) {
 			DPRINTF(("%s: SNDCTL_DSP_GETISPACE %d %d %d %d = %d\n",
@@ -655,7 +657,7 @@ oss_ioctl_audio(struct lwp *l, const struct oss_sys_ioctl_args *uap, register_t 
 		idat = 1;
 		error = ioctlf(fp, FIONBIO, &idat);
 		if (error) {
-			DPRINTF(("%s: SENDCLT_DSP_NONBLOCK %d\n",
+			DPRINTF(("%s: FIONBIO %d\n",
 			     __func__, error));
 			goto out;
 		}
@@ -964,7 +966,7 @@ getdevinfo(file_t *fp)
 	}
 	for(i = 0; i < NETBSD_MAXDEVS; i++) {
 		mi.index = i;
-		if (ioctlf(fp, AUDIO_MIXER_DEVINFO, &mi) < 0)
+		if (ioctlf(fp, AUDIO_MIXER_DEVINFO, &mi) != 0)
 			break;
 		switch(mi.type) {
 		case AUDIO_MIXER_VALUE:
@@ -992,7 +994,7 @@ getdevinfo(file_t *fp)
 	}
 	for(i = 0; i < NETBSD_MAXDEVS; i++) {
 		mi.index = i;
-		if (ioctlf(fp, AUDIO_MIXER_DEVINFO, &mi) < 0)
+		if (ioctlf(fp, AUDIO_MIXER_DEVINFO, &mi) != 0)
 			break;
 		if (strcmp(mi.label.name, AudioNsource) != 0)
 			continue;
@@ -1085,7 +1087,7 @@ oss_ioctl_mixer(struct lwp *lwp, const struct oss_sys_ioctl_args *uap, register_
 		}
 		break;
 	case OSS_SOUND_MIXER_READ_RECSRC:
-		if (di->source == -1) {
+		if (di->source == (u_long)-1) {
 			DPRINTF(("%s: OSS_SOUND_MIXER_READ_RECSRC bad source\n",
 			    __func__));
 			error = EINVAL;
@@ -1130,7 +1132,7 @@ oss_ioctl_mixer(struct lwp *lwp, const struct oss_sys_ioctl_args *uap, register_
 		break;
 	case OSS_SOUND_MIXER_WRITE_RECSRC:
 	case OSS_SOUND_MIXER_WRITE_R_RECSRC:
-		if (di->source == -1) {
+		if (di->source == (u_long)-1) {
 			DPRINTF(("%s: OSS_SOUND_MIXER_WRITE_RECSRC bad "
 			    "source\n", __func__));
 			error = EINVAL;
@@ -1490,11 +1492,11 @@ static void
 setblocksize(file_t *fp, struct audio_info *info)
 {
 	struct audio_info set;
-	int s;
+	u_int s;
 
-	 if (info->blocksize & (info->blocksize-1)) {
+	 if (info->blocksize & (info->blocksize - 1)) {
 		for(s = 32; s < info->blocksize; s <<= 1)
-			;
+			continue;
 		AUDIO_INITINFO(&set);
 		set.blocksize = s;
 		fp->f_ops->fo_ioctl(fp, AUDIO_SETINFO, &set);

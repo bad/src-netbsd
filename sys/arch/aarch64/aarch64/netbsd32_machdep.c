@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32_machdep.c,v 1.3 2018/11/27 14:09:53 maxv Exp $	*/
+/*	$NetBSD: netbsd32_machdep.c,v 1.7 2019/07/12 06:44:49 skrll Exp $	*/
 
 /*
  * Copyright (c) 2018 Ryo Shimizu <ryo@nerv.org>
@@ -27,9 +27,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_machdep.c,v 1.3 2018/11/27 14:09:53 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: netbsd32_machdep.c,v 1.7 2019/07/12 06:44:49 skrll Exp $");
 
+#if defined(_KERNEL_OPT)
 #include "opt_compat_netbsd.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/core.h>
@@ -86,10 +88,9 @@ netbsd32_setregs(struct lwp *l, struct exec_package *pack, vaddr_t stack)
 	tf->tf_spsr = SPSR_M_USR32;
 #endif
 
-#ifdef THUMB_CODE
+	/* THUMB CODE? */
 	if (pack->ep_entry & 1)
 		tf->tf_spsr |= SPSR_A32_T;
-#endif
 }
 
 /* aarch32 fpscr register is assigned to two registers fpsr/fpcr on aarch64 */
@@ -116,6 +117,10 @@ netbsd32_process_read_regs(struct lwp *l, struct reg32 *regs)
 	regs->r_lr = tf->tf_reg[14];		/* r14 = lr */
 	regs->r_pc = tf->tf_pc;			/* r15 = pc */
 	regs->r_cpsr = tf->tf_spsr;
+
+	/* THUMB CODE? */
+	if (tf->tf_spsr & SPSR_A32_T)
+		regs->r_pc |= 1;
 
 	return 0;
 }
@@ -221,7 +226,7 @@ netbsd32_sendsig_siginfo(const ksiginfo_t *ksi, const sigset_t *mask)
 	    tf->tf_reg[13];	/* r13 = sp on aarch32 */
 
 	fp = (struct netbsd32_sigframe_siginfo *)sp;
-	fp = (struct netbsd32_sigframe_siginfo *)STACK_ALIGN(fp - 1, 8);
+	fp = (struct netbsd32_sigframe_siginfo *)STACK_ALIGN(fp - 1, (8 - 1));
 
 	memset(&frame, 0, sizeof(frame));
 
@@ -256,12 +261,13 @@ netbsd32_sendsig_siginfo(const ksiginfo_t *ksi, const sigset_t *mask)
 	/* the trampoline uses r5 as the uc address */
 	tf->tf_reg[5] = (uint32_t)(uintptr_t)&fp->sf_uc;
 	tf->tf_pc = (uint32_t)(uintptr_t)handler;
-#ifdef THUMB_CODE
-	if (((int)handler) & 1)
+
+	/* THUMB CODE? */
+	if (((uintptr_t)handler) & 1)
 		tf->tf_spsr |= SPSR_A32_T;
 	else
 		tf->tf_spsr &= ~SPSR_A32_T;
-#endif
+
 	tf->tf_reg[13] = (uint32_t)(uintptr_t)fp;		/* sp */
 	tf->tf_reg[14] = (uint32_t)(uintptr_t)sdesc->sd_tramp;	/* lr */
 
@@ -306,7 +312,7 @@ startlwp32(void *arg)
 int
 cpu_mcontext32_validate(struct lwp *l, const mcontext32_t *mcp)
 {
-	struct proc * const p = l->l_proc;
+	struct proc * const p __diagused = l->l_proc;
 	const uint32_t spsr = mcp->__gregs[_REG_CPSR];
 
 	KASSERT(p->p_flag & PK_32);
@@ -536,4 +542,18 @@ netbsd32_vm_default_addr(struct proc *p, vaddr_t base, vsize_t sz,
 		return VM_DEFAULT_ADDRESS32_TOPDOWN(base, sz);
 	else
 		return VM_DEFAULT_ADDRESS32_BOTTOMUP(base, sz);
+}
+
+void  
+netbsd32_machdep_md_init(void)
+{ 
+ 
+	/* nothing to do */
+}
+ 
+void
+netbsd32_machdep_md_fini(void)
+{
+ 
+	/* nothing to do */
 }

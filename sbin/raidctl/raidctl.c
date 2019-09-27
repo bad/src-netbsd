@@ -1,4 +1,4 @@
-/*      $NetBSD: raidctl.c,v 1.67 2018/03/24 19:41:35 nakayama Exp $   */
+/*      $NetBSD: raidctl.c,v 1.71 2019/09/26 10:47:30 mlelstv Exp $   */
 
 /*-
  * Copyright (c) 1996, 1997, 1998 The NetBSD Foundation, Inc.
@@ -39,7 +39,7 @@
 #include <sys/cdefs.h>
 
 #ifndef lint
-__RCSID("$NetBSD: raidctl.c,v 1.67 2018/03/24 19:41:35 nakayama Exp $");
+__RCSID("$NetBSD: raidctl.c,v 1.71 2019/09/26 10:47:30 mlelstv Exp $");
 #endif
 
 
@@ -83,7 +83,7 @@ static  void check_status(int,int);
 static  void check_parity(int,int, char *);
 static  void do_meter(int, u_long);
 static  void get_bar(char *, double, int);
-static  void get_time_string(char *, int);
+static  void get_time_string(char *, size_t, int);
 static  void rf_output_pmstat(int, int);
 static  void rf_pm_configure(int, int, char *, int[]);
 static  unsigned int xstrtouint(const char *);
@@ -430,7 +430,7 @@ rf_get_device_status(int fd)
 	RF_DeviceConfig_t device_config;
 	void *cfg_ptr;
 	int is_clean;
-	int i;
+	int i, nspares;
 
 	cfg_ptr = &device_config;
 
@@ -441,9 +441,13 @@ rf_get_device_status(int fd)
 		printf("%20s: %s\n", device_config.devs[i].devname, 
 		       device_status(device_config.devs[i].status));
 	}
-	if (device_config.nspares > 0) {
+
+	nspares = MIN(device_config.nspares,
+	                __arraycount(device_config.spares));
+
+	if (nspares > 0) {
 		printf("Spares:\n");
-		for(i=0; i < device_config.nspares; i++) {
+		for(i=0; i < nspares; i++) {
 			printf("%20s: %s\n",
 			       device_config.spares[i].devname, 
 			       device_status(device_config.spares[i].status));
@@ -461,8 +465,8 @@ rf_get_device_status(int fd)
 		}
 	}
 
-	if (device_config.nspares > 0) {
-		for(i=0; i < device_config.nspares; i++) {
+	if (nspares > 0) {
+		for(i=0; i < nspares; i++) {
 			if ((device_config.spares[i].status == 
 			     rf_ds_optimal) ||
 			    (device_config.spares[i].status == 
@@ -603,7 +607,7 @@ rf_output_configuration(int fd, const char *name)
 {
 	RF_DeviceConfig_t device_config;
 	void *cfg_ptr;
-	int i;
+	int i, nspares;
 	RF_ComponentLabel_t component_label;
 	void *label_ptr;
 	int component_num;
@@ -615,6 +619,9 @@ rf_output_configuration(int fd, const char *name)
 	printf("\n");
 	do_ioctl(fd, RAIDFRAME_GET_INFO, &cfg_ptr, "RAIDFRAME_GET_INFO");
 
+	nspares = MIN(device_config.nspares,
+	                __arraycount(device_config.spares));
+	
 	/*
 	 * After NetBSD 9, convert this to not output the numRow's value,
 	 * which is no longer required or ever used.
@@ -631,9 +638,9 @@ rf_output_configuration(int fd, const char *name)
 		    rf_output_devname(device_config.devs[i].devname));
 	printf("\n");
 
-	if (device_config.nspares > 0) {
+	if (nspares > 0) {
 		printf("START spare\n");
-		for(i=0; i < device_config.nspares; i++)
+		for(i=0; i < nspares; i++)
 			printf("%s\n", device_config.spares[i].devname);
 		printf("\n");
 	}
@@ -675,7 +682,7 @@ get_component_number(int fd, char *component_name, int *component_number,
 {
 	RF_DeviceConfig_t device_config;
 	void *cfg_ptr;
-	int i;
+	int i, nspares;
 	int found;
 
 	*component_number = -1;
@@ -686,6 +693,9 @@ get_component_number(int fd, char *component_name, int *component_number,
 		 "RAIDFRAME_GET_INFO");
 
 	*num_columns = device_config.cols;
+
+	nspares = MIN(device_config.nspares,
+	                __arraycount(device_config.spares));
 	
 	found = 0;
 	for(i=0; i < device_config.ndevs; i++) {
@@ -696,7 +706,7 @@ get_component_number(int fd, char *component_name, int *component_number,
 		}
 	}
 	if (!found) { /* maybe it's a spare? */
-		for(i=0; i < device_config.nspares; i++) {
+		for(i=0; i < nspares; i++) {
 			if (strncmp(component_name, 
 				    device_config.spares[i].devname,
 				    PATH_MAX)==0) {
@@ -823,7 +833,7 @@ init_component_labels(int fd, int serial_number)
 	component_label.status = 0;
 	
 	do_ioctl( fd, RAIDFRAME_INIT_LABELS, &component_label,
-		  "RAIDFRAME_SET_COMPONENT_LABEL");
+		  "RAIDFRAME_INIT_LABELS");
 }
 
 static void
@@ -1076,7 +1086,7 @@ do_meter(int fd, u_long option)
 			last_eta = simple_eta;
 		}
 
-		get_time_string(eta_buffer, simple_eta);
+		get_time_string(eta_buffer, sizeof eta_buffer, simple_eta);
 
 		fprintf(stdout,"\r%3d%% |%s| ETA: %s %c",
 			percent_done,bar_buffer,eta_buffer,tbits[tbit_value]);
@@ -1126,32 +1136,42 @@ get_bar(char *string, double percent, int max_strlen)
 }
 
 static void
-get_time_string(char *string, int simple_time)
+get_time_string(char *string, size_t len, int simple_time)
 {
 	int minutes, seconds, hours;
-	char hours_buffer[5];
+	char hours_buffer[8];
 	char minutes_buffer[5];
 	char seconds_buffer[5];
 
 	if (simple_time >= 0) {
 
-		minutes = (int) simple_time / 60;
-		seconds = ((int)simple_time - 60*minutes);
+		minutes = simple_time / 60;
+		seconds = simple_time - 60*minutes;
 		hours = minutes / 60;
 		minutes = minutes - 60*hours;
+#if defined(__GNUC__)
+		/*
+		 * snprintf() truncation checker fails to detect that seconds
+		 * and minutes will be 0-59 range.
+		 */
+		if (minutes < 0 || minutes > 60)
+			minutes = 60;
+		if (seconds < 0 || seconds > 60)
+			seconds = 60;
+#endif
 		
 		if (hours > 0) {
-			snprintf(hours_buffer,5,"%02d:",hours);
+			snprintf(hours_buffer,sizeof hours_buffer,"%02d:",hours);
 		} else {
-			snprintf(hours_buffer,5,"   ");
+			snprintf(hours_buffer,sizeof hours_buffer,"   ");
 		}
 		
-		snprintf(minutes_buffer,5,"%02d:",minutes);
-		snprintf(seconds_buffer,5,"%02d",seconds);
-		snprintf(string,1024,"%s%s%s",
+		snprintf(minutes_buffer,sizeof minutes_buffer,"%02d:",minutes);
+		snprintf(seconds_buffer,sizeof seconds_buffer,"%02d",seconds);
+		snprintf(string,len,"%s%s%s",
 			 hours_buffer, minutes_buffer, seconds_buffer);
 	} else {
-		snprintf(string,1024,"   --:--");
+		snprintf(string,len,"   --:--");
 	}
 	
 }

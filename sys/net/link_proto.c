@@ -1,4 +1,4 @@
-/*	$NetBSD: link_proto.c,v 1.36 2017/04/06 03:55:00 ozaki-r Exp $	*/
+/*	$NetBSD: link_proto.c,v 1.39 2019/09/25 09:53:37 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 1982, 1986, 1993
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: link_proto.c,v 1.36 2017/04/06 03:55:00 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: link_proto.c,v 1.39 2019/09/25 09:53:37 ozaki-r Exp $");
 
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -215,12 +215,13 @@ link_control(struct socket *so, unsigned long cmd, void *data,
 				error = EBUSY;
 			else {
 				/* TBD routing socket */
-				rt_newaddrmsg(RTM_DELETE, ifa, 0, NULL);
+				rt_addrmsg(RTM_DELETE, ifa);
 				/* We need to release psref for ifa_remove */
 				ifaref(ifa);
 				ifa_release(ifa, &psref);
 				ifa_remove(ifp, ifa);
-				KASSERT(ifa->ifa_refcnt == 1);
+				KASSERTMSG(ifa->ifa_refcnt == 1, "ifa_refcnt=%d",
+				    ifa->ifa_refcnt);
 				ifafree(ifa);
 				ifa = NULL;
 			}
@@ -236,7 +237,7 @@ link_control(struct socket *so, unsigned long cmd, void *data,
 				sockaddr_copy(ifa->ifa_addr,
 				    ifa->ifa_addr->sa_len, &u.sa);
 				ifa_insert(ifp, ifa);
-				rt_newaddrmsg(RTM_ADD, ifa, 0, NULL);
+				rt_addrmsg(RTM_ADD, ifa);
 			}
 
 			mkactive = (iflr->flags & IFLR_ACTIVE) != 0;
@@ -244,7 +245,7 @@ link_control(struct socket *so, unsigned long cmd, void *data,
 
 			if (!isactive && mkactive) {
 				if_activate_sadl(ifp, ifa, nsdl);
-				rt_newaddrmsg(RTM_CHANGE, ifa, 0, NULL);
+				rt_addrmsg(RTM_CHANGE, ifa);
 				error = ENETRESET;
 			}
 			break;
@@ -400,6 +401,9 @@ static int
 link_sendoob(struct socket *so, struct mbuf *m, struct mbuf *control)
 {
 	KASSERT(solocked(so));
+
+	m_freem(m);
+	m_freem(control);
 
 	return EOPNOTSUPP;
 }

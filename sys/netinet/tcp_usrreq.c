@@ -1,4 +1,4 @@
-/*	$NetBSD: tcp_usrreq.c,v 1.222 2018/12/16 17:46:58 christos Exp $	*/
+/*	$NetBSD: tcp_usrreq.c,v 1.225 2019/08/06 15:48:18 riastradh Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
@@ -99,7 +99,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tcp_usrreq.c,v 1.222 2018/12/16 17:46:58 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tcp_usrreq.c,v 1.225 2019/08/06 15:48:18 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -209,7 +209,8 @@ tcp_getpcb(struct socket *so, struct inpcb **inp,
 static void
 change_keepalive(struct socket *so, struct tcpcb *tp)
 {
-	tp->t_maxidle = tp->t_keepcnt * tp->t_keepintvl;
+	tp->t_maxidle = tp->t_keepcnt * MIN(tp->t_keepintvl,
+	    TCP_TIMER_MAXTICKS / tp->t_keepcnt);
 	TCP_TIMER_DISARM(tp, TCPT_KEEP);
 	TCP_TIMER_DISARM(tp, TCPT_2MSL);
 
@@ -400,7 +401,7 @@ tcp_ctloutput(int op, struct socket *so, struct sockopt *sopt)
 			error = sockopt_get(sopt, &ui, sizeof(ui));
 			if (error)
 				break;
-			if (ui > 0) {
+			if (ui > 0 && ui <= TCP_TIMER_MAXTICKS) {
 				tp->t_keepidle = ui;
 				change_keepalive(so, tp);
 			} else
@@ -411,7 +412,7 @@ tcp_ctloutput(int op, struct socket *so, struct sockopt *sopt)
 			error = sockopt_get(sopt, &ui, sizeof(ui));
 			if (error)
 				break;
-			if (ui > 0) {
+			if (ui > 0 && ui <= TCP_TIMER_MAXTICKS) {
 				tp->t_keepintvl = ui;
 				change_keepalive(so, tp);
 			} else
@@ -422,7 +423,7 @@ tcp_ctloutput(int op, struct socket *so, struct sockopt *sopt)
 			error = sockopt_get(sopt, &ui, sizeof(ui));
 			if (error)
 				break;
-			if (ui > 0) {
+			if (ui > 0 && ui <= TCP_TIMER_MAXTICKS) {
 				tp->t_keepcnt = ui;
 				change_keepalive(so, tp);
 			} else
@@ -433,7 +434,7 @@ tcp_ctloutput(int op, struct socket *so, struct sockopt *sopt)
 			error = sockopt_get(sopt, &ui, sizeof(ui));
 			if (error)
 				break;
-			if (ui > 0) {
+			if (ui > 0 && ui <= TCP_TIMER_MAXTICKS) {
 				tp->t_keepinit = ui;
 				change_keepalive(so, tp);
 			} else
@@ -1148,14 +1149,18 @@ tcp_sendoob(struct socket *so, struct mbuf *m, struct mbuf *control)
 	int error = 0;
 	int s;
 
-	if ((error = tcp_getpcb(so, &inp, &in6p, &tp)) != 0)
+	if ((error = tcp_getpcb(so, &inp, &in6p, &tp)) != 0) {
+		m_freem(m);
+		m_freem(control);
 		return error;
+	}
 
 	ostate = tcp_debug_capture(tp, PRU_SENDOOB);
 
 	s = splsoftnet();
 	if (sbspace_oob(&so->so_snd) == 0) {
 		m_freem(m);
+		m_freem(control);
 		splx(s);
 		return ENOBUFS;
 	}
@@ -1174,6 +1179,7 @@ tcp_sendoob(struct socket *so, struct mbuf *m, struct mbuf *control)
 	tp->t_force = 0;
 	tcp_debug_trace(so, tp, ostate, PRU_SENDOOB);
 	splx(s);
+	m_freem(control);
 
 	return error;
 }
@@ -1684,8 +1690,8 @@ sysctl_net_inet_tcp_ident(SYSCTLFN_ARGS)
 
 		in6_sin6_2_sin_in_sock((struct sockaddr *)&sa[0]);
 		in6_sin6_2_sin_in_sock((struct sockaddr *)&sa[1]);
-		/*FALLTHROUGH*/
 #endif /* INET6 */
+		/*FALLTHROUGH*/
 	case PF_INET:
 		si4[0] = (struct sockaddr_in*)&sa[0];
 		si4[1] = (struct sockaddr_in*)&sa[1];
@@ -1955,6 +1961,9 @@ sysctl_tcp_keep(SYSCTLFN_ARGS)
 	error = sysctl_lookup(SYSCTLFN_CALL(&node));
 	if (error || newp == NULL)
 		return error;
+
+	if (!(tmp > 0 && tmp <= TCP_TIMER_MAXTICKS))
+		return EINVAL;
 
 	mutex_enter(softnet_lock);
 

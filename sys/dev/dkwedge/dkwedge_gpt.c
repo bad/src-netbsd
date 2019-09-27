@@ -1,4 +1,4 @@
-/*	$NetBSD: dkwedge_gpt.c,v 1.21 2018/11/06 04:04:33 mrg Exp $	*/
+/*	$NetBSD: dkwedge_gpt.c,v 1.24 2019/07/09 17:06:46 maxv Exp $	*/
 
 /*-
  * Copyright (c) 2004 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: dkwedge_gpt.c,v 1.21 2018/11/06 04:04:33 mrg Exp $");
+__KERNEL_RCSID(0, "$NetBSD: dkwedge_gpt.c,v 1.24 2019/07/09 17:06:46 maxv Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -76,6 +76,8 @@ static const struct {
 	{ GPT_ENT_TYPE_VMWARE_VMKCORE,		DKW_PTYPE_VMKCORE },
 	{ GPT_ENT_TYPE_VMWARE_VMFS,		DKW_PTYPE_VMFS },
 	{ GPT_ENT_TYPE_VMWARE_RESERVED,		DKW_PTYPE_VMWRESV },
+	{ GPT_ENT_TYPE_MS_BASIC_DATA,		DKW_PTYPE_NTFS },
+	{ GPT_ENT_TYPE_LINUX_DATA,		DKW_PTYPE_EXT2FS },
 };
 
 static const char *
@@ -173,7 +175,7 @@ dkwedge_discover_gpt(struct disk *pdk, struct vnode *vp)
 
 	entries = le32toh(hdr->hdr_entries);
 	entsz = roundup(le32toh(hdr->hdr_entsz), 8);
-	if (entsz > roundup(sizeof(struct gpt_ent), 8)) {
+	if (entsz != sizeof(struct gpt_ent)) {
 		aprint_error("%s: bogus GPT entry size: %u\n",
 		    pdk->dk_name, le32toh(hdr->hdr_entsz));
 		error = EINVAL;
@@ -239,6 +241,8 @@ dkwedge_discover_gpt(struct disk *pdk, struct vnode *vp)
 		    &ptype_guid);
 		uuid_snprintf(ent_guid_str, sizeof(ent_guid_str),
 		    &ent_guid);
+
+		memset(&dkw, 0, sizeof(dkw));
 
 		/* figure out the type */
 		ptype = gpt_ptype_guid_to_str(&ptype_guid);

@@ -1,4 +1,4 @@
-/*	$NetBSD: uhid.c,v 1.102 2018/09/03 16:29:34 riastradh Exp $	*/
+/*	$NetBSD: uhid.c,v 1.108 2019/05/05 03:17:54 mrg Exp $	*/
 
 /*
  * Copyright (c) 1998, 2004, 2008, 2012 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.102 2018/09/03 16:29:34 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.108 2019/05/05 03:17:54 mrg Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -57,6 +57,7 @@ __KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.102 2018/09/03 16:29:34 riastradh Exp $")
 #include <sys/vnode.h>
 #include <sys/poll.h>
 #include <sys/intr.h>
+#include <sys/compat_stub.h>
 
 #include <dev/usb/usb.h>
 #include <dev/usb/usbhid.h>
@@ -68,6 +69,8 @@ __KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.102 2018/09/03 16:29:34 riastradh Exp $")
 #include <dev/hid/hid.h>
 
 #include <dev/usb/uhidev.h>
+
+#include "ioconf.h"
 
 #ifdef UHID_DEBUG
 #define DPRINTF(x)	if (uhiddebug) printf x
@@ -142,7 +145,7 @@ int	uhid_match(device_t, cfdata_t, void *);
 void	uhid_attach(device_t, device_t, void *);
 int	uhid_detach(device_t, int);
 int	uhid_activate(device_t, enum devact);
-extern struct cfdriver uhid_cd;
+
 CFATTACH_DECL_NEW(uhid, sizeof(struct uhid_softc), uhid_match, uhid_attach,
     uhid_detach, uhid_activate);
 
@@ -229,8 +232,8 @@ uhid_detach(device_t self, int flags)
 			/* Wake everyone */
 			cv_broadcast(&sc->sc_cv);
 			/* Wait for processes to go away. */
-			usb_detach_wait(sc->sc_hdev.sc_dev,
-			    &sc->sc_detach_cv, &sc->sc_lock);
+			if (cv_timedwait(&sc->sc_detach_cv, &sc->sc_lock, hz * 60))
+				aprint_error_dev(self, ": didn't detach\n");
 		}
 	}
 	mutex_exit(&sc->sc_lock);
@@ -316,21 +319,23 @@ uhidopen(dev_t dev, int flag, int mode, struct lwp *l)
 	if (sc->sc_dying)
 		return ENXIO;
 
-	mutex_enter(&sc->sc_access_lock);
+	mutex_enter(&sc->sc_lock);
 
 	/*
 	 * uhid interrupts aren't enabled yet, so setup sc_q now, as
 	 * long as they're not already allocated.
 	 */
 	if (sc->sc_hdev.sc_state & UHIDEV_OPEN) {
-		mutex_exit(&sc->sc_access_lock);
+		mutex_exit(&sc->sc_lock);
 		return EBUSY;
 	}
+	mutex_exit(&sc->sc_lock);
+
 	if (clalloc(&sc->sc_q, UHID_BSIZE, 0) == -1) {
-		mutex_exit(&sc->sc_access_lock);
 		return ENOMEM;
 	}
 
+	mutex_enter(&sc->sc_access_lock);
 	error = uhidev_open(&sc->sc_hdev);
 	if (error) {
 		clfree(&sc->sc_q);
@@ -457,7 +462,7 @@ uhidread(dev_t dev, struct uio *uio, int flag)
 
 	mutex_enter(&sc->sc_lock);
 	if (--sc->sc_refcnt < 0)
-		usb_detach_broadcast(sc->sc_hdev.sc_dev, &sc->sc_detach_cv);
+		cv_broadcast(&sc->sc_detach_cv);
 	mutex_exit(&sc->sc_lock);
 	return error;
 }
@@ -507,7 +512,7 @@ uhidwrite(dev_t dev, struct uio *uio, int flag)
 
 	mutex_enter(&sc->sc_lock);
 	if (--sc->sc_refcnt < 0)
-		usb_detach_broadcast(sc->sc_hdev.sc_dev, &sc->sc_detach_cv);
+		cv_broadcast(&sc->sc_detach_cv);
 	mutex_exit(&sc->sc_lock);
 	return error;
 }
@@ -652,13 +657,15 @@ uhid_do_ioctl(struct uhid_softc *sc, u_long cmd, void *addr,
 		usbd_fill_deviceinfo(sc->sc_hdev.sc_parent->sc_udev,
 				     (struct usb_device_info *)addr, 0);
 		break;
-#ifdef COMPAT_30
 	case USB_GET_DEVICEINFO_OLD:
-		usbd_fill_deviceinfo_old(sc->sc_hdev.sc_parent->sc_udev,
-					 (struct usb_device_info_old *)addr, 0);
-
+		MODULE_HOOK_CALL(usb_subr_fill_30_hook,
+                    (sc->sc_hdev.sc_parent->sc_udev,
+		      (struct usb_device_info_old *)addr, 0,
+                      usbd_devinfo_vp, usbd_printBCD),
+                    enosys(), err);
+		if (err == 0)
+			return 0;
 		break;
-#endif
 	case USB_GET_STRING_DESC:
 	    {
 		struct usb_string_desc *si = (struct usb_string_desc *)addr;
@@ -699,7 +706,7 @@ uhidioctl(dev_t dev, u_long cmd, void *addr, int flag, struct lwp *l)
 
 	mutex_enter(&sc->sc_lock);
 	if (--sc->sc_refcnt < 0)
-		usb_detach_broadcast(sc->sc_hdev.sc_dev, &sc->sc_detach_cv);
+		cv_broadcast(&sc->sc_detach_cv);
 	mutex_exit(&sc->sc_lock);
 	return error;
 }

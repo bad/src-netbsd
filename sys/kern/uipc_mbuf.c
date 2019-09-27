@@ -1,4 +1,4 @@
-/*	$NetBSD: uipc_mbuf.c,v 1.231 2019/01/16 01:50:25 knakahara Exp $	*/
+/*	$NetBSD: uipc_mbuf.c,v 1.233 2019/09/18 16:18:12 maxv Exp $	*/
 
 /*
  * Copyright (c) 1999, 2001, 2018 The NetBSD Foundation, Inc.
@@ -62,7 +62,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uipc_mbuf.c,v 1.231 2019/01/16 01:50:25 knakahara Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uipc_mbuf.c,v 1.233 2019/09/18 16:18:12 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_mbuftrace.h"
@@ -567,6 +567,7 @@ m_gethdr(int how, int type)
 	m->m_pkthdr.csum_data = 0;
 	m->m_pkthdr.segsz = 0;
 	m->m_pkthdr.ether_vtag = 0;
+	m->m_pkthdr.pkthdr_flags = 0;
 	SLIST_INIT(&m->m_pkthdr.tags);
 
 	m->m_pkthdr.pattr_class = NULL;
@@ -1767,12 +1768,7 @@ m_align(struct mbuf *m, int len)
 	KASSERT(len != M_COPYALL);
 	KASSERT(M_LEADINGSPACE(m) == 0);
 
-	if (m->m_flags & M_EXT)
-		buflen = m->m_ext.ext_size;
-	else if (m->m_flags & M_PKTHDR)
-		buflen = MHLEN;
-	else
-		buflen = MLEN;
+	buflen = M_BUFSIZE(m);
 
 	KASSERT(len <= buflen);
 	adjust = buflen - len;
@@ -2209,20 +2205,12 @@ m_verify_packet(struct mbuf *m)
 
 		dat = n->m_data;
 		len = n->m_len;
-
-		if (n->m_flags & M_EXT) {
-			low = n->m_ext.ext_buf;
-			high = low + n->m_ext.ext_size;
-		} else if (n->m_flags & M_PKTHDR) {
-			low = n->m_pktdat;
-			high = low + MHLEN;
-		} else {
-			low = n->m_dat;
-			high = low + MLEN;
-		}
 		if (__predict_false(dat + len < dat)) {
 			panic("%s: incorrect length (len = %d)", __func__, len);
 		}
+
+		low = M_BUFADDR(n);
+		high = low + M_BUFSIZE(n);
 		if (__predict_false((dat < low) || (dat + len > high))) {
 			panic("%s: m_data not in packet"
 			    "(dat = %p, len = %d, low = %p, high = %p)",

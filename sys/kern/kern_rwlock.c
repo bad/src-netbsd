@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_rwlock.c,v 1.52 2018/08/31 01:23:57 ozaki-r Exp $	*/
+/*	$NetBSD: kern_rwlock.c,v 1.54 2019/05/09 05:00:31 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 2002, 2006, 2007, 2008, 2009 The NetBSD Foundation, Inc.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_rwlock.c,v 1.52 2018/08/31 01:23:57 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_rwlock.c,v 1.54 2019/05/09 05:00:31 ozaki-r Exp $");
 
 #define	__RWLOCK_PRIVATE
 
@@ -113,7 +113,7 @@ do {									\
 #endif /* defined(LOCKDEBUG) */
 
 static void	rw_abort(const char *, size_t, krwlock_t *, const char *);
-static void	rw_dump(const volatile void *);
+static void	rw_dump(const volatile void *, lockop_printer_t);
 static lwp_t	*rw_owner(wchan_t);
 
 static inline uintptr_t
@@ -168,11 +168,11 @@ syncobj_t rw_syncobj = {
  *	Dump the contents of a rwlock structure.
  */
 static void
-rw_dump(const volatile void *cookie)
+rw_dump(const volatile void *cookie, lockop_printer_t pr)
 {
 	const volatile krwlock_t *rw = cookie;
 
-	printf_nolog("owner/count  : %#018lx flags    : %#018x\n",
+	pr("owner/count  : %#018lx flags    : %#018x\n",
 	    (long)RW_OWNER(rw), (int)RW_FLAGS(rw));
 }
 
@@ -290,9 +290,9 @@ rw_vector_enter(krwlock_t *rw, const krw_t op)
 	RW_ASSERT(rw, !cpu_intr_p());
 	RW_ASSERT(rw, curthread != 0);
 	RW_WANTLOCK(rw, op);
-	KDASSERT(pserialize_not_in_read_section());
 
 	if (panicstr == NULL) {
+		KDASSERT(pserialize_not_in_read_section());
 		LOCKDEBUG_BARRIER(&kernel_lock, 1);
 	}
 
