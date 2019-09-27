@@ -1,4 +1,4 @@
-/* $NetBSD: fdt_subr.c,v 1.24 2018/10/06 16:28:21 skrll Exp $ */
+/* $NetBSD: fdt_subr.c,v 1.31 2019/09/24 15:23:34 jmcneill Exp $ */
 
 /*-
  * Copyright (c) 2015 Jared D. McNeill <jmcneill@invisible.ca>
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: fdt_subr.c,v 1.24 2018/10/06 16:28:21 skrll Exp $");
+__KERNEL_RCSID(0, "$NetBSD: fdt_subr.c,v 1.31 2019/09/24 15:23:34 jmcneill Exp $");
 
 #include "opt_fdt.h"
 
@@ -130,6 +130,42 @@ fdtbus_get_phandle(int phandle, const char *prop)
 }
 
 int
+fdtbus_get_phandle_with_data(int phandle, const char *prop, const char *cells,
+    int index, struct fdt_phandle_data *data)
+{
+	int len;
+	const int offset = 1;
+
+	const u_int *p = fdtbus_get_prop(phandle, prop, &len);
+	if (p == NULL || len <= 0)
+		return EINVAL;
+
+	for (int i = 0; len > 0; i++) {
+		u_int phandle_ref = be32toh(*p);
+		const u_int iparent = fdtbus_get_phandle_from_native(phandle_ref);
+		uint32_t cells_num;
+		of_getprop_uint32(iparent, cells, &cells_num);
+
+		if (index == i) {
+			if (data != NULL) {
+				data->phandle = iparent;
+				data->count = cells_num;
+				data->values = p + offset;
+			}
+			goto done;
+		}
+
+		const u_int reclen = offset + cells_num;
+		len -= reclen * sizeof(u_int);
+		p += reclen;
+	}
+	return EINVAL;
+
+done:
+	return 0;
+}
+
+int
 fdtbus_get_phandle_from_native(int phandle)
 {
 	const int off = fdt_node_offset_by_phandle(fdt_data, phandle);
@@ -188,7 +224,7 @@ fdtbus_decode_range(int phandle, uint64_t paddr)
 
 	const int addr_cells = fdtbus_get_addr_cells(phandle);
 	const int size_cells = fdtbus_get_size_cells(phandle);
-	const int paddr_cells = fdtbus_get_addr_cells(OF_parent(parent));
+	const int paddr_cells = fdtbus_get_addr_cells(parent);
 	if (addr_cells == -1 || size_cells == -1 || paddr_cells == -1)
 		return paddr;
 
@@ -200,6 +236,10 @@ fdtbus_decode_range(int phandle, uint64_t paddr)
 		buf += paddr_cells * 4;
 		cl = fdtbus_get_cells(buf, size_cells);
 		buf += size_cells * 4;
+
+#ifdef FDTBUS_DEBUG
+		printf("%s: %s: cba=0x%#" PRIx64 ", pba=0x%#" PRIx64 ", cl=0x%#" PRIx64 "\n", __func__, fdt_get_name(fdtbus_get_data(), fdtbus_phandle2offset(phandle), NULL), cba, pba, cl);
+#endif
 
 		if (paddr >= cba && paddr < cba + cl)
 			return fdtbus_decode_range(parent, pba) + (paddr - cba);
@@ -215,26 +255,14 @@ int
 fdtbus_get_reg_byname(int phandle, const char *name, bus_addr_t *paddr,
     bus_size_t *psize)
 {
-	const char *reg_names, *p;
 	u_int index;
-	int len, resid;
-	int error = ENOENT;
+	int error;
 
-	reg_names = fdtbus_get_prop(phandle, "reg-names", &len);
-	if (len <= 0)
-		return error;
+	error = fdtbus_get_index(phandle, "reg-names", name, &index);
+	if (error != 0)
+		return ENOENT;
 
-	p = reg_names;
-	for (index = 0, resid = len; resid > 0; index++) {
-		if (strcmp(p, name) == 0) {
-			error = fdtbus_get_reg(phandle, index, paddr, psize);
-			break;
-		}
-		resid -= strlen(p);
-		p += strlen(p) + 1;
-	}
-
-	return error;
+	return fdtbus_get_reg(phandle, index, paddr, psize);
 }
 
 int
@@ -289,10 +317,12 @@ fdtbus_get_reg64(int phandle, u_int index, uint64_t *paddr, uint64_t *psize)
 
 	if (paddr) {
 		*paddr = fdtbus_decode_range(OF_parent(phandle), addr);
+#ifdef FDTBUS_DEBUG
 		const char *name = fdt_get_name(fdtbus_get_data(),
 		    fdtbus_phandle2offset(phandle), NULL);
-		aprint_debug("fdt: [%s] decoded addr #%u: %" PRIx64
+		printf("fdt: [%s] decoded addr #%u: %" PRIx64
 		    " -> %" PRIx64 "\n", name, index, addr, *paddr);
+#endif
 	}
 	if (psize)
 		*psize = size;
@@ -477,4 +507,27 @@ fdtbus_get_string_index(int phandle, const char *prop, u_int index)
 	}
 
 	return NULL;
+}
+
+int
+fdtbus_get_index(int phandle, const char *prop, const char *name, u_int *idx)
+{
+	const char *p;
+	size_t pl;
+	u_int index;
+	int len;
+
+	p = fdtbus_get_prop(phandle, prop, &len);
+	if (p == NULL || len <= 0)
+		return -1;
+
+	for (index = 0; len > 0;
+	    pl = strlen(p) + 1, len -= pl, p += pl, index++) {
+		if (strcmp(p, name) == 0) {
+			*idx = index;
+			return 0;
+		}
+	}
+
+	return -1;
 }

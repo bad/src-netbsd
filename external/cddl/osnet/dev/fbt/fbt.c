@@ -1,4 +1,4 @@
-/*	$NetBSD: fbt.c,v 1.24 2018/05/28 21:05:03 chs Exp $	*/
+/*	$NetBSD: fbt.c,v 1.27 2019/07/16 07:26:00 hannken Exp $	*/
 
 /*
  * CDDL HEADER START
@@ -177,7 +177,8 @@ fbt_excluded(const char *name)
 	    strncmp(name, "kdb_", 4) == 0 ||
 	    strncmp(name, "lockdebug_", 10) == 0 ||
 	    strncmp(name, "kauth_", 5) == 0 ||
-	    strncmp(name, "ktext_write", 11) == 0) {
+	    strncmp(name, "ktext_write", 11) == 0 ||
+	    strncmp(name, "fbt_", 4) == 0) {
 		return (1);
 	}
 #endif
@@ -284,7 +285,7 @@ fbt_provide_module(void *arg, modctl_t *mod)
 	 * dependency are ineligible for FBT tracing.
 	 */
 	for (i = 0; i < mod->mod_nrequired; i++) {
-		if (strncmp(module_name(mod->mod_required[i]),
+		if (strncmp(module_name((*mod->mod_required)[i]),
 			    "dtrace", 6) == 0)
 			return;
 	}
@@ -1316,7 +1317,7 @@ fbt_unload(void)
 static int
 dtrace_fbt_modcmd(modcmd_t cmd, void *data)
 {
-	int bmajor = -1, cmajor = -1;
+	int bmajor = -1, cmajor = 352;
 	int error;
 
 	switch (cmd) {

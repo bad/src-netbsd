@@ -1,4 +1,4 @@
-/*	$NetBSD: cpu.c,v 1.126 2019/01/03 15:12:00 jmcneill Exp $	*/
+/*	$NetBSD: cpu.c,v 1.131 2019/09/08 07:59:43 tnn Exp $	*/
 
 /*
  * Copyright (c) 1995 Mark Brinicombe.
@@ -46,7 +46,7 @@
 #include "opt_multiprocessor.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.126 2019/01/03 15:12:00 jmcneill Exp $");
+__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.131 2019/09/08 07:59:43 tnn Exp $");
 
 #include <sys/param.h>
 #include <sys/conf.h>
@@ -70,8 +70,12 @@ uint32_t cpu_mpidr[MAXCPUS] = {
 
 volatile u_int arm_cpu_hatched __cacheline_aligned = 0;
 volatile uint32_t arm_cpu_mbox __cacheline_aligned = 0;
-uint32_t arm_cpu_marker[2] __cacheline_aligned = { 0, 0 };
 u_int arm_cpu_max = 1;
+
+#ifdef MPDEBUG
+uint32_t arm_cpu_marker[2] __cacheline_aligned = { 0, 0 };
+#endif
+
 #endif
 
 /* Prototypes */
@@ -103,7 +107,17 @@ cpu_attach(device_t dv, cpuid_t id)
 		ci->ci_arm_cputype = ci->ci_arm_cpuid & CPU_ID_CPU_MASK;
 		ci->ci_arm_cpurev = ci->ci_arm_cpuid & CPU_ID_REVISION_MASK;
 #ifdef MULTIPROCESSOR
-		ci->ci_mpidr = armreg_mpidr_read();
+		uint32_t mpidr = armreg_mpidr_read();
+		ci->ci_mpidr = mpidr;
+
+		if (mpidr & MPIDR_MT) {
+			ci->ci_smt_id = __SHIFTOUT(mpidr, MPIDR_AFF0);
+			ci->ci_core_id = __SHIFTOUT(mpidr, MPIDR_AFF1);
+			ci->ci_package_id = __SHIFTOUT(mpidr, MPIDR_AFF2);
+		} else {
+			ci->ci_core_id = __SHIFTOUT(mpidr, MPIDR_AFF0);
+			ci->ci_package_id = __SHIFTOUT(mpidr, MPIDR_AFF1);
+		}
 #endif
 	} else {
 #ifdef MULTIPROCESSOR
@@ -503,6 +517,8 @@ const struct cpuidtab cpuids[] = {
 	{ CPU_ID_CORTEXA9R3,	CPU_CLASS_CORTEX,	"Cortex-A9 r3",
 	  pN_steppings, "7A" },
 	{ CPU_ID_CORTEXA9R4,	CPU_CLASS_CORTEX,	"Cortex-A9 r4",
+	  pN_steppings, "7A" },
+	{ CPU_ID_CORTEXA12R0,	CPU_CLASS_CORTEX,	"Cortex-A17(A12) r0",	/* A12 was rebranded A17 */
 	  pN_steppings, "7A" },
 	{ CPU_ID_CORTEXA15R2,	CPU_CLASS_CORTEX,	"Cortex-A15 r2",
 	  pN_steppings, "7A" },

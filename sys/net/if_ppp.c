@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ppp.c,v 1.163 2019/01/11 02:57:21 knakahara Exp $	*/
+/*	$NetBSD: if_ppp.c,v 1.166 2019/09/20 08:45:29 maxv Exp $	*/
 /*	Id: if_ppp.c,v 1.6 1997/03/04 03:33:00 paulus Exp 	*/
 
 /*
@@ -102,7 +102,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ppp.c,v 1.163 2019/01/11 02:57:21 knakahara Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ppp.c,v 1.166 2019/09/20 08:45:29 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "ppp.h"
@@ -181,19 +181,6 @@ static void	pppintr(void *);
 extern struct linesw ppp_disc;
 
 /*
- * Some useful mbuf macros not in mbuf.h.
- */
-#define M_IS_CLUSTER(m)	((m)->m_flags & M_EXT)
-
-#define M_DATASTART(m)							\
-	(M_IS_CLUSTER(m) ? (m)->m_ext.ext_buf :				\
-	    (m)->m_flags & M_PKTHDR ? (m)->m_pktdat : (m)->m_dat)
-
-#define M_DATASIZE(m)							\
-	(M_IS_CLUSTER(m) ? (m)->m_ext.ext_size :			\
-	    (m)->m_flags & M_PKTHDR ? MHLEN: MLEN)
-
-/*
  * We define two link layer specific mbuf flags, to mark high-priority
  * packets for output, and received packets following lost/corrupted
  * packets.
@@ -206,8 +193,10 @@ static int ppp_clone_destroy(struct ifnet *);
 
 static struct ppp_softc *ppp_create(const char *, int);
 
-static LIST_HEAD(, ppp_softc) ppp_softc_list;
-static kmutex_t ppp_list_lock;
+static struct {
+	LIST_HEAD(ppp_sclist, ppp_softc) list;
+	kmutex_t lock;
+} ppp_softcs __cacheline_aligned;
 
 struct if_clone ppp_cloner =
     IF_CLONE_INITIALIZER("ppp", ppp_clone_create, ppp_clone_destroy);
@@ -245,8 +234,8 @@ pppinit(void)
 	if (ttyldisc_attach(&ppp_disc) != 0)
 		panic("%s", __func__);
 
-	mutex_init(&ppp_list_lock, MUTEX_DEFAULT, IPL_NONE);
-	LIST_INIT(&ppp_softc_list);
+	mutex_init(&ppp_softcs.lock, MUTEX_DEFAULT, IPL_NONE);
+	LIST_INIT(&ppp_softcs.list);
 	if_clone_attach(&ppp_cloner);
 }
 
@@ -255,14 +244,14 @@ pppdetach(void)
 {
 	int error = 0;
 
-	if (!LIST_EMPTY(&ppp_softc_list))
+	if (!LIST_EMPTY(&ppp_softcs.list))
 		error = EBUSY;
 
 	if (error == 0)
 		error = ttyldisc_detach(&ppp_disc);
 
 	if (error == 0) {
-		mutex_destroy(&ppp_list_lock);
+		mutex_destroy(&ppp_softcs.lock);
 		if_clone_detach(&ppp_cloner);
 		ppp_compressor_destroy();
 	}
@@ -277,10 +266,10 @@ ppp_create(const char *name, int unit)
 
 	sc = malloc(sizeof(*sc), M_DEVBUF, M_WAIT|M_ZERO);
 
-	mutex_enter(&ppp_list_lock);
+	mutex_enter(&ppp_softcs.lock);
 	if (unit == -1) {
 		int i = 0;
-		LIST_FOREACH(sci, &ppp_softc_list, sc_iflist) {
+		LIST_FOREACH(sci, &ppp_softcs.list, sc_iflist) {
 			scl = sci;
 			if (i < sci->sc_unit) {
 				unit = i;
@@ -295,13 +284,13 @@ ppp_create(const char *name, int unit)
 		if (unit == -1)
 			unit = i;
 	} else {
-		LIST_FOREACH(sci, &ppp_softc_list, sc_iflist) {
+		LIST_FOREACH(sci, &ppp_softcs.list, sc_iflist) {
 			scl = sci;
 			if (unit < sci->sc_unit)
 				break;
 			else if (unit == sci->sc_unit) {
 				free(sc, M_DEVBUF);
-				mutex_exit(&ppp_list_lock);
+				mutex_exit(&ppp_softcs.lock);
 				return NULL;
 			}
 		}
@@ -312,9 +301,9 @@ ppp_create(const char *name, int unit)
 	else if (scl != NULL)
 		LIST_INSERT_AFTER(scl, sc, sc_iflist);
 	else
-		LIST_INSERT_HEAD(&ppp_softc_list, sc, sc_iflist);
+		LIST_INSERT_HEAD(&ppp_softcs.list, sc, sc_iflist);
 
-	mutex_exit(&ppp_list_lock);
+	mutex_exit(&ppp_softcs.lock);
 
 	if_initname(&sc->sc_if, name, sc->sc_unit = unit);
 	callout_init(&sc->sc_timo_ch, 0);
@@ -356,9 +345,9 @@ ppp_clone_destroy(struct ifnet *ifp)
 	if (sc->sc_devp != NULL)
 		return EBUSY; /* Not removing it */
 
-	mutex_enter(&ppp_list_lock);
+	mutex_enter(&ppp_softcs.lock);
 	LIST_REMOVE(sc, sc_iflist);
-	mutex_exit(&ppp_list_lock);
+	mutex_exit(&ppp_softcs.lock);
 
 	bpf_detach(ifp);
 	if_detach(ifp);
@@ -376,17 +365,17 @@ pppalloc(pid_t pid)
 	struct ppp_softc *sc = NULL, *scf;
 	int i;
 
-	mutex_enter(&ppp_list_lock);
-	LIST_FOREACH(scf, &ppp_softc_list, sc_iflist) {
+	mutex_enter(&ppp_softcs.lock);
+	LIST_FOREACH(scf, &ppp_softcs.list, sc_iflist) {
 		if (scf->sc_xfer == pid) {
 			scf->sc_xfer = 0;
-			mutex_exit(&ppp_list_lock);
+			mutex_exit(&ppp_softcs.lock);
 			return scf;
 		}
 		if (scf->sc_devp == NULL && sc == NULL)
 			sc = scf;
 	}
-	mutex_exit(&ppp_list_lock);
+	mutex_exit(&ppp_softcs.lock);
 
 	if (sc == NULL)
 		sc = ppp_create(ppp_cloner.ifc_name, -1);
@@ -1622,7 +1611,7 @@ ppp_inproc(struct ppp_softc *sc, struct mbuf *m)
 	 * If the packet will fit in a header mbuf, don't waste a
 	 * whole cluster on it.
 	 */
-	if (ilen <= MHLEN && M_IS_CLUSTER(m)) {
+	if (ilen <= MHLEN && (m->m_flags & M_EXT)) {
 		MGETHDR(mp, M_DONTWAIT, MT_DATA);
 		if (mp != NULL) {
 			m_copydata(m, 0, ilen, mtod(mp, void *));

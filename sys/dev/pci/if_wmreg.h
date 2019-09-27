@@ -1,4 +1,4 @@
-/*	$NetBSD: if_wmreg.h,v 1.111 2018/12/20 09:32:13 msaitoh Exp $	*/
+/*	$NetBSD: if_wmreg.h,v 1.115 2019/07/23 09:37:08 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 2001 Wasabi Systems, Inc.
@@ -720,17 +720,17 @@ struct livengood_tcpip_ctxdesc {
 #define IVAR_VALID       __BIT(7)
 /* IVAR definitions for 82580 and newer */
 #define WMREG_IVAR_Q(x)	(WMREG_IVAR0 + ((x) / 2) * 4)
-#define IVAR_TX_MASK_Q(x) (0x000000ff << (((x) % 2) == 0 ? 8 : 24))
-#define IVAR_RX_MASK_Q(x) (0x000000ff << (((x) % 2) == 0 ? 0 : 16))
+#define IVAR_TX_MASK_Q(x) (0x000000ffUL << (((x) % 2) == 0 ? 8 : 24))
+#define IVAR_RX_MASK_Q(x) (0x000000ffUL << (((x) % 2) == 0 ? 0 : 16))
 /* IVAR definitions for 82576 */
 #define WMREG_IVAR_Q_82576(x)	(WMREG_IVAR0 + ((x) & 0x7) * 4)
-#define IVAR_TX_MASK_Q_82576(x) (0x000000ff << (((x) / 8) == 0 ? 8 : 24))
-#define IVAR_RX_MASK_Q_82576(x) (0x000000ff << (((x) / 8) == 0 ? 0 : 16))
+#define IVAR_TX_MASK_Q_82576(x) (0x000000ffUL << (((x) / 8) == 0 ? 8 : 24))
+#define IVAR_RX_MASK_Q_82576(x) (0x000000ffUL << (((x) / 8) == 0 ? 0 : 16))
 /* IVAR definitions for 82574 */
 #define IVAR_ALLOC_MASK_82574	__BITS(0, 2)
 #define IVAR_VALID_82574	__BIT(3)
-#define IVAR_TX_MASK_Q_82574(x) (0x0000000f << ((x) == 0 ? 8 : 12))
-#define IVAR_RX_MASK_Q_82574(x) (0x0000000f << ((x) == 0 ? 0 : 4))
+#define IVAR_TX_MASK_Q_82574(x) (0x0000000fUL << ((x) == 0 ? 8 : 12))
+#define IVAR_RX_MASK_Q_82574(x) (0x0000000fUL << ((x) == 0 ? 0 : 4))
 #define IVAR_OTHER_MASK		__BITS(16, 19)
 #define IVAR_INT_ON_ALL_WB	__BIT(31)
 
@@ -906,7 +906,8 @@ struct livengood_tcpip_ctxdesc {
 #define	DEFAULT_80003ES2LAN_TCTL_EXT_GCEX 0x00010000
 
 #define	WMREG_TIPG	0x0410	/* Transmit IPG Register */
-#define	TIPG_IPGT(x)	(x)		/* IPG transmit time */
+#define	TIPG_IPGT_MASK	__BITS(0, 9)	/* IPG transmit time MASK */
+#define	TIPG_IPGT(x)	__SHIFTIN((x), TIPG_IPGT_MASK) /* IPG transmit time */
 #define	TIPG_IPGR1(x)	((x) << 10)	/* IPG receive time 1 */
 #define	TIPG_IPGR2(x)	((x) << 20)	/* IPG receive time 2 */
 #define	TIPG_WM_DFLT	(TIPG_IPGT(0x0a) | TIPG_IPGR1(0x02) | TIPG_IPGR2(0x0a))
@@ -1269,7 +1270,7 @@ struct livengood_tcpip_ctxdesc {
 
 #define WMREG_RETA_Q(x)		(0x5c00 + ((x) >> 2) * 4) /* Redirection Table */
 #define RETA_NUM_ENTRIES	128
-#define RETA_ENTRY_MASK_Q(x)	(0x000000ff << (((x) % 4) * 8)) /* Redirection Table */
+#define RETA_ENTRY_MASK_Q(x)	(0x000000ffUL << (((x) % 4) * 8)) /* Redirection Table */
 #define RETA_ENT_QINDEX_MASK		__BITS(3,0) /*queue index for 82580 and newer */
 #define RETA_ENT_QINDEX0_MASK_82575	__BITS(3,2) /*queue index for pool0 */
 #define RETA_ENT_QINDEX1_MASK_82575	__BITS(7,6) /*queue index for pool1 and regular RSS */
@@ -1492,7 +1493,7 @@ struct livengood_tcpip_ctxdesc {
 #define WM_INVM_DATA_REG(reg)	(0x12120 + 4*(reg))
 #define INVM_SIZE			64 /* Number of INVM Data Registers */
 
-/* iNVM default vaule */
+/* iNVM default value */
 #define NVM_INIT_CTRL_2_DEFAULT_I211	0x7243
 #define NVM_INIT_CTRL_4_DEFAULT_I211	0x00c1
 #define NVM_LED_1_CFG_DEFAULT_I211	0x0184

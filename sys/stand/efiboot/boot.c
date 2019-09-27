@@ -1,4 +1,4 @@
-/*	$NetBSD: boot.c,v 1.14 2018/11/15 23:52:33 jmcneill Exp $	*/
+/*	$NetBSD: boot.c,v 1.18 2019/04/21 22:30:41 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2016 Kimihiro Nonaka <nonaka@netbsd.org>
@@ -72,16 +72,20 @@ static const char *efi_memory_type[] = {
 static char default_device[32];
 static char initrd_path[255];
 static char dtb_path[255];
+static char efibootplist_path[255];
 static char netbsd_path[255];
+static char netbsd_args[255];
 
 #define	DEFTIMEOUT	5
 #define DEFFILENAME	names[0]
 
 int	set_bootfile(const char *);
+int	set_bootargs(const char *);
 
 void	command_boot(char *);
 void	command_dev(char *);
 void	command_dtb(char *);
+void	command_plist(char *);
 void	command_initrd(char *);
 void	command_ls(char *);
 void	command_mem(char *);
@@ -97,6 +101,7 @@ const struct boot_command commands[] = {
 	{ "boot",	command_boot,		"boot [dev:][filename] [args]\n     (ex. \"hd0a:\\netbsd.old -s\"" },
 	{ "dev",	command_dev,		"dev" },
 	{ "dtb",	command_dtb,		"dtb [dev:][filename]" },
+	{ "plist",	command_plist,		"plist [dev:][filename]" },
 	{ "initrd",	command_initrd,		"initrd [dev:][filename]" },
 	{ "ls",		command_ls,		"ls [hdNn:/path]" },
 	{ "mem",	command_mem,		"mem" },
@@ -135,6 +140,9 @@ command_boot(char *arg)
 	if (!kernel || !*kernel)
 		kernel = DEFFILENAME;
 
+	if (!*bootargs)
+		bootargs = netbsd_args;
+
 	exec_netbsd(kernel, bootargs);
 }
 
@@ -158,6 +166,13 @@ void
 command_dtb(char *arg)
 {
 	set_dtb_path(arg);
+}
+
+void
+command_plist(char *arg)
+{
+	if (set_efibootplist_path(arg) == 0)
+		load_efibootplist(false);
 }
 
 void
@@ -252,9 +267,8 @@ command_version(char *arg)
 	ufirmware = NULL;
 	rv = ucs2_to_utf8(ST->FirmwareVendor, &ufirmware);
 	if (rv == 0) {
-		printf("EFI Firmware: %s (rev %d.%02d)\n", ufirmware,
-		    ST->FirmwareRevision >> 16,
-		    ST->FirmwareRevision & 0xffff);
+		printf("EFI Firmware: %s (rev 0x%x)\n", ufirmware,
+		    ST->FirmwareRevision);
 		FreePool(ufirmware);
 	}
 
@@ -320,11 +334,34 @@ get_dtb_path(void)
 }
 
 int
+set_efibootplist_path(const char *arg)
+{
+	if (strlen(arg) + 1 > sizeof(efibootplist_path))
+		return ERANGE;
+	strcpy(efibootplist_path, arg);
+	return 0;
+}
+
+char *get_efibootplist_path(void)
+{
+	return efibootplist_path;
+}
+
+int
 set_bootfile(const char *arg)
 {
 	if (strlen(arg) + 1 > sizeof(netbsd_path))
 		return ERANGE;
 	strcpy(netbsd_path, arg);
+	return 0;
+}
+
+int
+set_bootargs(const char *arg)
+{
+	if (strlen(arg) + 1 > sizeof(netbsd_args))
+		return ERANGE;
+	strcpy(netbsd_args, arg);
 	return 0;
 }
 
@@ -340,6 +377,21 @@ static void
 read_env(void)
 {
 	char *s;
+
+	s = efi_env_get("efibootplist");
+	if (s) {
+#ifdef EFIBOOT_DEBUG
+		printf(">> Setting efiboot.plist path to '%s' from environment\n", s);
+#endif
+		set_efibootplist_path(s);
+		FreePool(s);
+	}
+
+	/*
+	 * Read the efiboot.plist now as it may contain additional
+	 * environment variables.
+	 */
+	load_efibootplist(true);
 
 	s = efi_env_get("fdtfile");
 	if (s) {
@@ -376,6 +428,15 @@ read_env(void)
 		set_default_device(s);
 		FreePool(s);
 	}
+
+	s = efi_env_get("bootargs");
+	if (s) {
+#ifdef EFIBOOT_DEBUG
+		printf(">> Setting default boot args to '%s' from environment\n", s);
+#endif
+		set_bootargs(s);
+		FreePool(s);
+	}
 }
 
 void
@@ -395,13 +456,14 @@ boot(void)
 	for (; currname < (int)NUMNAMES; currname++) {
 		if (currname >= 0)
 			set_bootfile(names[currname]);
-		printf("booting %s - starting in ", netbsd_path);
+		printf("booting %s%s%s - starting in ", netbsd_path,
+		    netbsd_args[0] != '\0' ? " " : "", netbsd_args);
 
 		c = awaitkey(DEFTIMEOUT, 1);
 		if (c != '\r' && c != '\n' && c != '\0')
 			bootprompt(); /* does not return */
 
-		exec_netbsd(netbsd_path, "");
+		exec_netbsd(netbsd_path, netbsd_args);
 	}
 
 	bootprompt();	/* does not return */

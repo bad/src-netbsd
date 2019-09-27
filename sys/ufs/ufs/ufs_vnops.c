@@ -1,4 +1,4 @@
-/*	$NetBSD: ufs_vnops.c,v 1.242 2019/01/01 10:06:55 hannken Exp $	*/
+/*	$NetBSD: ufs_vnops.c,v 1.248 2019/09/18 17:59:15 christos Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -66,7 +66,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ufs_vnops.c,v 1.242 2019/01/01 10:06:55 hannken Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ufs_vnops.c,v 1.248 2019/09/18 17:59:15 christos Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_ffs.h"
@@ -1257,7 +1257,12 @@ ufs_readdir(void *v)
 
 	KASSERT(VOP_ISLOCKED(vp));
 
-	/* figure out where we want to read */
+	/*
+	 * Figure out where the user wants us to read and how much.
+	 *
+	 * XXX: there should probably be an upper bound on callerbytes
+	 * to avoid silliness trying to do large kernel allocations.
+	 */
 	callerbytes = calleruio->uio_resid;
 	startoffset = calleruio->uio_offset;
 	endoffset = startoffset + callerbytes;
@@ -1267,19 +1272,92 @@ ufs_readdir(void *v)
 		return EINVAL;
 	}
 
-	/* round start and end down to block boundaries */
-	physstart = startoffset & ~(off_t)(ump->um_dirblksiz - 1);
-	physend = endoffset & ~(off_t)(ump->um_dirblksiz - 1);
-	skipstart = startoffset - physstart;
-	dropend = endoffset - physend;
+	/*
+	 * Now figure out where to actually start reading. Round the
+	 * start down to a block boundary: we need to start at the
+	 * beginning of a block in order to read the directory
+	 * correctly.
+	 *
+	 * We also want to always read a whole number of blocks so
+	 * that the copying code below doesn't have to worry about
+	 * partial entries. (It used to try at one point, and was a
+	 * horrible mess.)
+	 *
+	 * Furthermore, since blocks have to be scanned from the
+	 * beginning, if we go partially into another block now we'll
+	 * just have to rescan it on the next readdir call, which
+	 * doesn't really serve any useful purpose.
+	 *
+	 * So, round down the end as well. It's ok to underpopulate
+	 * the transfer buffer, as long as we send back at least one
+	 * dirent so as to avoid giving a bogus EOF indication.
+	 *
+	 * Note that because dirents are larger than ffs struct
+	 * directs, despite the rounding down we may not be able to
+	 * send all the entries in the blocks we read and may have to
+	 * rescan some of them on the next call anyway. Alternatively
+	 * if there's empty space on disk we might have actually been
+	 * able to fit the next block in, and so forth. None of this
+	 * actually matters that much in practice.
+	 *
+	 * XXX: what does ffs do if a directory block becomes
+	 * completely empty, and what happens if all the blocks we
+	 * read are completely empty even though we aren't at EOF? As
+	 * of this writing I (dholland) can't remember the details.
+	 */
+	physstart = rounddown2(startoffset, ump->um_dirblksiz);
+	physend = rounddown2(endoffset, ump->um_dirblksiz);
 
-	if (callerbytes - dropend < _DIRENT_MINSIZE(rawdp)) {
-		/* no room for even one struct direct */
+	if (physstart >= physend) {
+		/* Need at least one block */
 		return EINVAL;
 	}
 
-	/* how much to actually read */
-	rawbufmax = callerbytes + skipstart - dropend;
+	/*
+	 * skipstart is the number of bytes we need to read in
+	 * (because we need to start at the beginning of a block) but
+	 * not transfer to the user.
+	 *
+	 * dropend is the number of bytes to ignore at the end of the
+	 * user's buffer.
+	 */
+	skipstart = startoffset - physstart;
+	dropend = endoffset - physend;
+
+	/*
+	 * Make a transfer buffer.
+	 *
+	 * Note: rawbufmax = physend - physstart. Proof:
+	 *
+	 * physend - physstart = physend - physstart
+	 *   = physend - physstart + startoffset - startoffset
+	 *   = physend + (startoffset - physstart) - startoffset
+	 *   = physend + skipstart - startoffset
+	 *   = physend + skipstart - startoffset + endoffset - endoffset
+	 *   = skipstart - startoffset + endoffset - (endoffset - physend)
+	 *   = skipstart - startoffset + endoffset - dropend
+	 *   = skipstart - startoffset + (startoffset + callerbytes) - dropend
+	 *   = skipstart + callerbytes - dropend
+	 *   = rawbufmax
+	 * Qed.
+	 *
+	 * XXX: this should just use physend - physstart.
+	 *
+	 * XXX: this should be rewritten to read the directs straight
+	 * out of bufferio buffers instead of copying twice. This would
+	 * also let us adapt better to the user's buffer size.
+	 */
+
+	/* Base buffer space for CALLERBYTES of new data */
+	rawbufmax = callerbytes + skipstart;
+	if (rawbufmax < callerbytes)
+		return EINVAL;
+	rawbufmax -= dropend;
+
+	if (rawbufmax < _DIRENT_MINSIZE(rawdp)) {
+		/* no room for even one struct direct */
+		return EINVAL;
+	}
 
 	/* read it */
 	rawbuf = kmem_alloc(rawbufmax, KM_SLEEP);
@@ -1831,6 +1909,7 @@ ufs_makeinode(struct vattr *vap, struct vnode *dvp,
 	if (error)
 		goto bad;
 	*vpp = tvp;
+	cache_enter(dvp, *vpp, cnp->cn_nameptr, cnp->cn_namelen, cnp->cn_flags);
 	return (0);
 
  bad:

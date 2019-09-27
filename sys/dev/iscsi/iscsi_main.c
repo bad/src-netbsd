@@ -1,4 +1,4 @@
-/*	$netBSD: iscsi_main.c,v 1.1.1.1 2011/05/02 07:01:11 agc Exp $	*/
+/*	$NetBSD: iscsi_main.c,v 1.31 2019/08/07 00:38:02 pgoyette Exp $	*/
 
 /*-
  * Copyright (c) 2004,2005,2006,2011 The NetBSD Foundation, Inc.
@@ -47,6 +47,7 @@ extern struct cfdriver iscsi_cd;
 #if defined(ISCSI_DEBUG)
 int iscsi_debug_level = ISCSI_DEBUG;
 #endif
+bool iscsi_hex_bignums = false;
 
 bool iscsi_detaching;
 
@@ -251,6 +252,9 @@ iscsi_attach(device_t parent, device_t self, void *aux)
 	iscsi_detaching = false;
 	iscsi_init_cleanup();
 
+	if (!pmf_device_register(self, NULL, NULL))
+		aprint_error_dev(self, "couldn't establish power handler\n");
+
 	aprint_normal("%s: attached.  major = %d\n", iscsi_cd.cd_name,
 	    cdevsw_lookup_major(&iscsi_cdevsw));
 }
@@ -283,6 +287,8 @@ iscsi_detach(device_t self, int flags)
 	error = iscsi_destroy_cleanup();
 	if (error)
 		return error;
+
+	pmf_device_deregister(sc->dev);
 
 	mutex_destroy(&sc->lock);
 
@@ -383,7 +389,7 @@ map_session(session_t *sess, device_t dev)
 	chan->chan_channel = 0;
 	chan->chan_flags = SCSIPI_CHAN_NOSETTLE | SCSIPI_CHAN_CANGROW;
 	chan->chan_ntargets = 1;
-	chan->chan_nluns = 16;		/* ToDo: ??? */
+	chan->chan_nluns = 16;
 	chan->chan_id = sess->s_id;
 
 	sess->s_child_dev = config_found(dev, chan, scsiprint);
@@ -618,6 +624,12 @@ SYSCTL_SETUP(sysctl_iscsi_setup, "ISCSI subtree setup")
 		SYSCTL_DESCR("iscsi controls"),
 		NULL, 0, NULL, 0,
 		CTL_HW, CTL_CREATE, CTL_EOL);
+	sysctl_createv(clog, 0, &node, NULL,
+		CTLFLAG_PERMANENT|CTLFLAG_READWRITE,
+		CTLTYPE_BOOL, "hexbignums",
+		SYSCTL_DESCR("encode parameters in hex"),
+		NULL, 0,  &iscsi_hex_bignums, 0,
+		CTL_CREATE, CTL_EOL);
 
 #ifdef ISCSI_DEBUG
 	sysctl_createv(clog, 0, &node, NULL,
@@ -665,7 +677,6 @@ iscsi_modcmd(modcmd_t cmd, void *arg)
 #ifdef _MODULE
 	devmajor_t cmajor = NODEVMAJOR, bmajor = NODEVMAJOR;
 	int error;
-	static struct sysctllog *clog;
 #endif
 
 	switch (cmd) {
@@ -711,8 +722,6 @@ iscsi_modcmd(modcmd_t cmd, void *arg)
 			config_cfdriver_detach(&iscsi_cd);
 			return ENXIO;
 		}
-
-		sysctl_iscsi_setup(&clog);
 #endif
 		return 0;
 		break;
@@ -722,8 +731,6 @@ iscsi_modcmd(modcmd_t cmd, void *arg)
 		error = config_cfdata_detach(iscsi_cfdata);
 		if (error)
 			return error;
-
-		sysctl_teardown(&clog);
 
 		config_cfattach_detach(iscsi_cd.cd_name, &iscsi_ca);
 		config_cfdriver_detach(&iscsi_cd);

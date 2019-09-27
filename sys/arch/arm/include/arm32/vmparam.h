@@ -1,4 +1,4 @@
-/*	$NetBSD: vmparam.h,v 1.42 2018/10/27 13:26:23 skrll Exp $	*/
+/*	$NetBSD: vmparam.h,v 1.45 2019/06/19 09:54:42 skrll Exp $	*/
 
 /*
  * Copyright (c) 2001, 2002 Wasabi Systems, Inc.
@@ -38,15 +38,14 @@
 #ifndef _ARM_ARM32_VMPARAM_H_
 #define	_ARM_ARM32_VMPARAM_H_
 
-#if defined(_KERNEL) || defined(_KMEMUSER)
 
 /*
  * Virtual Memory parameters common to all arm32 platforms.
  */
 
+#include <sys/cdefs.h>
 #include <arm/cpuconf.h>
 #include <arm/arm32/param.h>
-#include <arm/arm32/pte.h>	/* pt_entry_t */
 
 #define	__USE_TOPDOWN_VM
 #define	USRSTACK	VM_MAXUSER_ADDRESS
@@ -79,7 +78,7 @@
 
 /*
  * While the ARM architecture defines Section mappings, large pages,
- * and small pages, the standard page size is (and will always be) 4K.
+ * and small pages, the standard MMU page size is (and will always be) 4K.
  */
 #define	PAGE_SHIFT	PGSHIFT
 #define	PAGE_SIZE	(1 << PAGE_SHIFT)
@@ -98,7 +97,5 @@
 
 #define	VM_MIN_KERNEL_ADDRESS	((vaddr_t) KERNEL_BASE)
 #define	VM_MAX_KERNEL_ADDRESS	((vaddr_t) -(PAGE_SIZE+1))
-
-#endif /* _KERNEL || _KMEMUSER */
 
 #endif /* _ARM_ARM32_VMPARAM_H_ */

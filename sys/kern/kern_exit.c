@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_exit.c,v 1.273 2018/11/29 12:37:22 maxv Exp $	*/
+/*	$NetBSD: kern_exit.c,v 1.276 2019/06/13 20:20:18 kamil Exp $	*/
 
 /*-
  * Copyright (c) 1998, 1999, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -67,7 +67,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.273 2018/11/29 12:37:22 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.276 2019/06/13 20:20:18 kamil Exp $");
 
 #include "opt_ktrace.h"
 #include "opt_dtrace.h"
@@ -84,6 +84,7 @@ __KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.273 2018/11/29 12:37:22 maxv Exp $")
 #include <sys/buf.h>
 #include <sys/wait.h>
 #include <sys/file.h>
+#include <sys/fstrans.h>
 #include <sys/vnode.h>
 #include <sys/syslog.h>
 #include <sys/pool.h>
@@ -104,6 +105,7 @@ __KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.273 2018/11/29 12:37:22 maxv Exp $")
 #include <sys/lwpctl.h>
 #include <sys/atomic.h>
 #include <sys/sdt.h>
+#include <sys/psref.h>
 
 #include <uvm/uvm_extern.h>
 
@@ -340,9 +342,15 @@ exit1(struct lwp *l, int exitcode, int signo)
 	 */
 	mutex_enter(proc_lock);
 	if (p->p_lflag & PL_PPWAIT) {
+		lwp_t *lp;
+
 		l->l_lwpctl = NULL; /* was on loan from blocked parent */
 		p->p_lflag &= ~PL_PPWAIT;
-		cv_broadcast(&p->p_pptr->p_waitcv);
+
+		lp = p->p_vforklwp;
+		p->p_vforklwp = NULL;
+		lp->l_vforkwaiting = false;
+		cv_broadcast(&lp->l_waitcv);
 	}
 
 	if (SESS_LEADER(p)) {
@@ -399,6 +407,9 @@ exit1(struct lwp *l, int exitcode, int signo)
 		}
 	}
 	fixjobc(p, p->p_pgrp, 0);
+
+	/* Release fstrans private data. */
+	fstrans_lwp_dtor(l);
 
 	/*
 	 * Finalize the last LWP's specificdata, as well as the

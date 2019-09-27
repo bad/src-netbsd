@@ -1,4 +1,4 @@
-/*	$NetBSD: init_main.c,v 1.501 2018/12/26 22:16:26 thorpej Exp $	*/
+/*	$NetBSD: init_main.c,v 1.505 2019/09/24 19:21:45 kamil Exp $	*/
 
 /*-
  * Copyright (c) 2008, 2009 The NetBSD Foundation, Inc.
@@ -97,7 +97,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: init_main.c,v 1.501 2018/12/26 22:16:26 thorpej Exp $");
+__KERNEL_RCSID(0, "$NetBSD: init_main.c,v 1.505 2019/09/24 19:21:45 kamil Exp $");
 
 #include "opt_ddb.h"
 #include "opt_inet.h"
@@ -195,6 +195,7 @@ extern void *_binary_splash_image_end;
 #include <sys/kauth.h>
 #include <net80211/ieee80211_netbsd.h>
 #include <sys/cprng.h>
+#include <sys/psref.h>
 
 #include <sys/syscall.h>
 #include <sys/syscallargs.h>
@@ -248,6 +249,9 @@ static void configure(void);
 static void configure2(void);
 static void configure3(void);
 void main(void);
+
+CTASSERT(sizeof(void *) == sizeof(intptr_t));
+CTASSERT(__alignof__(void *) == __alignof__(intptr_t));
 
 /*
  * System startup; initialize the world, create process 0, mount root
@@ -393,6 +397,9 @@ main(void)
 	procinit();
 	lwpinit();
 
+	/* Must be called after lwpinit (lwpinit_specificdata) */
+	psref_init();
+
 	/* Initialize signal-related data structures. */
 	signal_init();
 
@@ -466,11 +473,12 @@ main(void)
 	if (usevnodes > desiredvnodes)
 		desiredvnodes = usevnodes;
 #endif
-	vfsinit();
-	lf_init();
 
 	/* Initialize fstrans. */
 	fstrans_init();
+
+	vfsinit();
+	lf_init();
 
 	/* Initialize the file descriptor system. */
 	fd_sys_init();
@@ -615,6 +623,14 @@ main(void)
 	 */
 	if (fork1(l, 0, SIGCHLD, NULL, 0, start_init, NULL, NULL))
 		panic("fork init");
+
+	/*
+	 * The initproc variable cannot be initialized in start_init as there
+	 * is a race between vfs_mountroot and start_init.
+	 */
+	mutex_enter(proc_lock);
+	initproc = proc_find_raw(1);
+	mutex_exit(proc_lock);
 
 	/*
 	 * Load any remaining builtin modules, and hand back temporary
@@ -945,8 +961,6 @@ start_init(void *arg)
 	char *ucp, **uap, *arg0, *arg1, *argv[3];
 	char ipath[129];
 	int ipx, len;
-
-	initproc = p;
 
 	/*
 	 * Now in process 1.

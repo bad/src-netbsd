@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ethersubr.c,v 1.272 2018/12/21 08:58:08 msaitoh Exp $	*/
+/*	$NetBSD: if_ethersubr.c,v 1.276 2019/07/17 03:26:24 msaitoh Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
@@ -61,7 +61,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ethersubr.c,v 1.272 2018/12/21 08:58:08 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ethersubr.c,v 1.276 2019/07/17 03:26:24 msaitoh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -790,9 +790,8 @@ ether_input(struct ifnet *ifp, struct mbuf *m)
 			/* unknown subtype */
 			break;
 		}
-		/* FALLTHROUGH */
 	}
-
+	/* FALLTHROUGH */
 	default:
 		if (m->m_flags & M_PROMISC) {
 			m_freem(m);
@@ -997,7 +996,9 @@ ether_ifattach(struct ifnet *ifp, const uint8_t *lla)
 		if_set_sadl(ifp, lla, ETHER_ADDR_LEN, !ETHER_IS_LOCAL(lla));
 
 	LIST_INIT(&ec->ec_multiaddrs);
+	SIMPLEQ_INIT(&ec->ec_vids);
 	ec->ec_lock = mutex_obj_alloc(MUTEX_DEFAULT, IPL_NET);
+	ec->ec_flags = 0;
 	ifp->if_broadcastaddr = etherbroadcastaddr;
 	bpf_attach(ifp, DLT_EN10MB, sizeof(struct ether_header));
 #ifdef MBUFTRACE
@@ -1042,6 +1043,7 @@ ether_ifdetach(struct ifnet *ifp)
 #endif
 
 	ETHER_LOCK(ec);
+	KASSERT(ec->ec_nvlans == 0);
 	while ((enm = LIST_FIRST(&ec->ec_multiaddrs)) != NULL) {
 		LIST_REMOVE(enm, enm_list);
 		kmem_free(enm, sizeof(*enm));
@@ -1372,6 +1374,13 @@ ether_set_ifflags_cb(struct ethercom *ec, ether_cb_t cb)
 	ec->ec_ifflags_cb = cb;
 }
 
+void
+ether_set_vlan_cb(struct ethercom *ec, ether_vlancb_t cb)
+{
+
+	ec->ec_vlan_cb = cb;
+}
+
 static int
 ether_ioctl_reinit(struct ethercom *ec)
 {
@@ -1471,6 +1480,14 @@ ether_ioctl(struct ifnet *ifp, u_long cmd, void *data)
 		if ((error = ifioctl_common(ifp, cmd, data)) != 0)
 			return error;
 		return ether_ioctl_reinit(ec);
+	case SIOCGIFFLAGS:
+		error = ifioctl_common(ifp, cmd, data);
+		if (error == 0) {
+			/* Set IFF_ALLMULTI for backcompat */
+			ifr->ifr_flags |= (ec->ec_flags & ETHER_F_ALLMULTI) ?
+			    IFF_ALLMULTI : 0;
+		}
+		return error;
 	case SIOCGETHERCAP:
 		eccr = (struct eccapreq *)data;
 		eccr->eccr_capabilities = ec->ec_capabilities;
@@ -1495,9 +1512,14 @@ ether_ioctl(struct ifnet *ifp, u_long cmd, void *data)
 		return ether_delmulti(ifreq_getaddr(cmd, ifr), ec);
 	case SIOCSIFMEDIA:
 	case SIOCGIFMEDIA:
-		if (ec->ec_mii == NULL)
+		if (ec->ec_mii != NULL)
+			return ifmedia_ioctl(ifp, ifr, &ec->ec_mii->mii_media,
+			    cmd);
+		else if (ec->ec_ifmedia != NULL)
+			return ifmedia_ioctl(ifp, ifr, ec->ec_ifmedia, cmd);
+		else
 			return ENOTTY;
-		return ifmedia_ioctl(ifp, ifr, &ec->ec_mii->mii_media, cmd);
+		break;
 	case SIOCALIFADDR:
 		sdl = satocsdl(sstocsa(&iflr->addr));
 		if (sdl->sdl_family != AF_LINK)

@@ -1,4 +1,4 @@
-/*	$NetBSD: ipsecif.c,v 1.13 2018/12/26 08:58:51 knakahara Exp $  */
+/*	$NetBSD: ipsecif.c,v 1.17 2019/09/19 06:07:25 knakahara Exp $  */
 
 /*
  * Copyright (c) 2017 Internet Initiative Japan Inc.
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ipsecif.c,v 1.13 2018/12/26 08:58:51 knakahara Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ipsecif.c,v 1.17 2019/09/19 06:07:25 knakahara Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -500,7 +500,8 @@ ipsecif6_output(struct ipsec_variant *var, int family, struct mbuf *m)
 {
 	struct ifnet *ifp = &var->iv_softc->ipsec_if;
 	struct ipsec_softc *sc = ifp->if_softc;
-	struct ipsec_ro *iro;
+	struct route *ro_pc;
+	kmutex_t *lock_pc;
 	struct rtentry *rt;
 	struct sockaddr_in6 *sin6_src;
 	struct sockaddr_in6 *sin6_dst;
@@ -583,13 +584,13 @@ ipsecif6_output(struct ipsec_variant *var, int family, struct mbuf *m)
 		return ENETUNREACH;
 	}
 #ifndef IPSEC_TX_TOS_CLEAR
+	if (!ip6_ipsec_copy_tos)
+		otos = 0;
+
 	if (ifp->if_flags & IFF_ECN)
 		ip_ecn_ingress(ECN_ALLOWED, &otos, &itos);
 	else
 		ip_ecn_ingress(ECN_NOCARE, &otos, &itos);
-
-	if (!ip6_ipsec_copy_tos)
-		otos = 0;
 #else
 	if (ip6_ipsec_copy_tos)
 		otos = itos;
@@ -601,24 +602,21 @@ ipsecif6_output(struct ipsec_variant *var, int family, struct mbuf *m)
 
 	sockaddr_in6_init(&u.dst6, &sin6_dst->sin6_addr, 0, 0, 0);
 
-	iro = percpu_getref(sc->ipsec_ro_percpu);
-	mutex_enter(iro->ir_lock);
-	if ((rt = rtcache_lookup(&iro->ir_ro, &u.dst)) == NULL) {
-		mutex_exit(iro->ir_lock);
-		percpu_putref(sc->ipsec_ro_percpu);
+	if_tunnel_get_ro(sc->ipsec_ro_percpu, &ro_pc, &lock_pc);
+	if ((rt = rtcache_lookup(ro_pc, &u.dst)) == NULL) {
+		if_tunnel_put_ro(sc->ipsec_ro_percpu, lock_pc);
 		m_freem(m);
 		return ENETUNREACH;
 	}
 
 	if (rt->rt_ifp == ifp) {
-		rtcache_unref(rt, &iro->ir_ro);
-		rtcache_free(&iro->ir_ro);
-		mutex_exit(iro->ir_lock);
-		percpu_putref(sc->ipsec_ro_percpu);
+		rtcache_unref(rt, ro_pc);
+		rtcache_free(ro_pc);
+		if_tunnel_put_ro(sc->ipsec_ro_percpu, lock_pc);
 		m_freem(m);
 		return ENETUNREACH;
 	}
-	rtcache_unref(rt, &iro->ir_ro);
+	rtcache_unref(rt, ro_pc);
 
 	/* set NAT-T ports */
 	error = ipsecif_set_natt_ports(var, m);
@@ -632,14 +630,13 @@ ipsecif6_output(struct ipsec_variant *var, int family, struct mbuf *m)
 	 * it is too painful to ask for resend of inner packet, to achieve
 	 * path MTU discovery for encapsulated packets.
 	 */
-	error = ip6_output(m, 0, &iro->ir_ro,
+	error = ip6_output(m, 0, ro_pc,
 	    ip6_ipsec_pmtu ? 0 : IPV6_MINMTU, 0, NULL, NULL);
 
 out:
 	if (error)
-		rtcache_free(&iro->ir_ro);
-	mutex_exit(iro->ir_lock);
-	percpu_putref(sc->ipsec_ro_percpu);
+		rtcache_free(ro_pc);
+	if_tunnel_put_ro(sc->ipsec_ro_percpu, lock_pc);
 
 	return error;
 }
@@ -748,7 +745,7 @@ ipsecif4_input(struct mbuf *m, int off, int proto, void *eparg)
 }
 
 /*
- * validate and filter the pakcet
+ * validate and filter the packet
  */
 static int
 ipsecif4_filter4(const struct ip *ip, struct ipsec_variant *var,
@@ -921,16 +918,10 @@ ipsecif4_detach(struct ipsec_variant *var)
 int
 ipsecif6_attach(struct ipsec_variant *var)
 {
-	struct sockaddr_in6 mask6;
 	struct ipsec_softc *sc = var->iv_softc;
 
 	KASSERT(if_ipsec_variant_is_configured(var));
 	KASSERT(var->iv_encap_cookie6 == NULL);
-
-	memset(&mask6, 0, sizeof(mask6));
-	mask6.sin6_len = sizeof(struct sockaddr_in6);
-	mask6.sin6_addr.s6_addr32[0] = mask6.sin6_addr.s6_addr32[1] =
-	mask6.sin6_addr.s6_addr32[2] = mask6.sin6_addr.s6_addr32[3] = ~0;
 
 	var->iv_encap_cookie6 = encap_attach_func(AF_INET6, -1, if_ipsec_encap_func,
 	    &ipsecif6_encapsw, sc);
@@ -941,16 +932,6 @@ ipsecif6_attach(struct ipsec_variant *var)
 	return 0;
 }
 
-static void
-ipsecif6_rtcache_free_pc(void *p, void *arg __unused, struct cpu_info *ci __unused)
-{
-	struct ipsec_ro *iro = p;
-
-	mutex_enter(iro->ir_lock);
-	rtcache_free(&iro->ir_ro);
-	mutex_exit(iro->ir_lock);
-}
-
 int
 ipsecif6_detach(struct ipsec_variant *var)
 {
@@ -959,7 +940,7 @@ ipsecif6_detach(struct ipsec_variant *var)
 
 	KASSERT(var->iv_encap_cookie6 != NULL);
 
-	percpu_foreach(sc->ipsec_ro_percpu, ipsecif6_rtcache_free_pc, NULL);
+	if_tunnel_ro_percpu_rtcache_free(sc->ipsec_ro_percpu);
 
 	var->iv_output = NULL;
 	error = encap_detach(var->iv_encap_cookie6);
@@ -975,7 +956,8 @@ ipsecif6_ctlinput(int cmd, const struct sockaddr *sa, void *d, void *eparg)
 	struct ip6ctlparam *ip6cp = NULL;
 	struct ip6_hdr *ip6;
 	const struct sockaddr_in6 *dst6;
-	struct ipsec_ro *iro;
+	struct route *ro_pc;
+	kmutex_t *lock_pc;
 
 	if (sa->sa_family != AF_INET6 ||
 	    sa->sa_len != sizeof(struct sockaddr_in6))
@@ -999,18 +981,16 @@ ipsecif6_ctlinput(int cmd, const struct sockaddr *sa, void *d, void *eparg)
 	if (!ip6)
 		return NULL;
 
-	iro = percpu_getref(sc->ipsec_ro_percpu);
-	mutex_enter(iro->ir_lock);
-	dst6 = satocsin6(rtcache_getdst(&iro->ir_ro));
+	if_tunnel_get_ro(sc->ipsec_ro_percpu, &ro_pc, &lock_pc);
+	dst6 = satocsin6(rtcache_getdst(ro_pc));
 	/* XXX scope */
 	if (dst6 == NULL)
 		;
 	else if (IN6_ARE_ADDR_EQUAL(&ip6->ip6_dst, &dst6->sin6_addr))
 		/* flush route cache */
-		rtcache_free(&iro->ir_ro);
+		rtcache_free(ro_pc);
 
-	mutex_exit(iro->ir_lock);
-	percpu_putref(sc->ipsec_ro_percpu);
+	if_tunnel_put_ro(sc->ipsec_ro_percpu, lock_pc);
 
 	return NULL;
 }

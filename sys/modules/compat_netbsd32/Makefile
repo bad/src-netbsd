@@ -1,46 +1,46 @@
-#	$NetBSD: Makefile,v 1.21 2018/11/26 08:48:43 mlelstv Exp $
+#	$NetBSD: Makefile,v 1.28 2019/09/26 02:01:02 christos Exp $
 
 .include "../Makefile.inc"
 .include "../Makefile.assym"
 
 KMOD=	compat_netbsd32
 
-CPPFLAGS+=	-DCOMPAT_09
-CPPFLAGS+=	-DCOMPAT_10
-CPPFLAGS+=	-DCOMPAT_11
-CPPFLAGS+=	-DCOMPAT_12
-CPPFLAGS+=	-DCOMPAT_13
-CPPFLAGS+=	-DCOMPAT_14
-CPPFLAGS+=	-DCOMPAT_15
-CPPFLAGS+=	-DCOMPAT_16
+.if ${MACHINE_ARCH} == "i386" || ${MACHINE_ARCH} == "x86_64"
+#NETBSD32_DRMKMS?=yes
+.endif
 
-CPPFLAGS+=	-DCOMPAT_20
-CPPFLAGS+=	-DCOMPAT_30 -DCOMPAT_40 -DCOMPAT_50
-CPPFLAGS+=	-DCOMPAT_60 -DCOMPAT_70 -DCOMPAT_80
-CPPFLAGS+=	-DCOMPAT_43
 CPPFLAGS+=	-DCOMPAT_NETBSD32
 CPPFLAGS+=	-DEXEC_ELF32 -DEXEC_ELF64
 CPPFLAGS+=	-DCOREDUMP -DNTP -DVMSWAP
-CPPFLAGS+=	-DNTP -DKTRACE -DMODULAR
+CPPFLAGS+=	-DKTRACE -DMODULAR -DQUOTA
 CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/libnv/dist
 
+.if ${NETBSD32_DRMKMS:Uno} == "yes"
+CPPFLAGS+=	-DNETBSD32_DRMKMS
+CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/common/include
+CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/drm2/include
+CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/drm2/dist
+CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/drm2/dist/include
+CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/drm2/dist/uapi
+.endif
+
 .PATH:	${S}/compat/netbsd32
-SRCS+=	netbsd32_compat_09.c netbsd32_compat_10.c
-SRCS+=	netbsd32_compat_12.c netbsd32_compat_13.c
-SRCS+=	netbsd32_compat_14.c netbsd32_compat_20.c
-SRCS+=	netbsd32_compat_30.c netbsd32_compat_43.c
-SRCS+=	netbsd32_compat_50.c netbsd32_compat_60.c
-SRCS+=	netbsd32_core.c netbsd32_event.c
-SRCS+=	netbsd32_exec_elf32.c
-SRCS+=	netbsd32_execve.c netbsd32_fs.c
-SRCS+=	netbsd32_ioctl.c
-SRCS+=	netbsd32_lwp.c netbsd32_netbsd.c
-SRCS+=	netbsd32_select.c
-SRCS+=	netbsd32_sem.c netbsd32_signal.c
-SRCS+=	netbsd32_socket.c netbsd32_syscalls.c
-SRCS+=	netbsd32_sysctl.c netbsd32_sysent.c
-SRCS+=	netbsd32_time.c netbsd32_wait.c
-SRCS+=	netbsd32_mod.c netbsd32_module.c
+.if ${NETBSD32_DRMKMS:Uno} == "yes"
+SRCS+=	netbsd32_drm.c
+.endif
+SRCS+=	netbsd32_core.c		netbsd32_event.c
+SRCS+=	netbsd32_exec_elf32.c	netbsd32_execve.c
+SRCS+=	netbsd32_fd.c		netbsd32_fs.c
+SRCS+=	netbsd32_ioctl.c	netbsd32_kern_proc.c
+SRCS+=	netbsd32_lwp.c		netbsd32_mod.c
+SRCS+=	netbsd32_netbsd.c	netbsd32_quota.c
+SRCS+=	netbsd32_rlimit.c	netbsd32_select.c
+SRCS+=	netbsd32_sem.c		netbsd32_signal.c
+SRCS+=	netbsd32_socket.c	netbsd32_syscalls.c
+SRCS+=	netbsd32_sysctl.c	netbsd32_sysent.c
+SRCS+=	netbsd32_time.c		netbsd32_wait.c	
+SRCS+=	netbsd32_vm.c
+SRCS+=	netbsd32_module.c
 
 .if ${MACHINE_CPU} != "mips" && ${MACHINE_CPU} != "powerpc"
 CPPFLAGS+=	-DEXEC_AOUT -DCOMPAT_NOMID
@@ -49,12 +49,20 @@ SRCS+=	netbsd32_exec_aout.c
 
 .if ${MACHINE_ARCH} == "x86_64"
 .PATH:	${S}/arch/amd64/amd64
-SRCS+=	netbsd32_machdep.c netbsd32_sigcode.S netbsd32_syscall.c
+CPPFLAGS+=	-DMTRR
+SRCS+=	netbsd32_syscall.c
+SRCS+=	netbsd32_machdep.c
 .endif
 
 .if ${MACHINE_ARCH} == "sparc64"
 .PATH:	${S}/arch/sparc64/sparc64
-SRCS+=	netbsd32_machdep.c netbsd32_sigcode.S
+SRCS+=	netbsd32_sigcode.S
+SRCS+=	netbsd32_machdep.c
+.endif
+
+.if ${MACHINE_ARCH} == "arm"
+.PATH:	${S}/arch/arm/arm32
+SRCS+=	netbsd32_machdep.c
 .endif
 
 .include <bsd.kmodule.mk>

@@ -1,4 +1,4 @@
-/*	$NetBSD: ppb.c,v 1.64 2018/12/07 09:36:26 msaitoh Exp $	*/
+/*	$NetBSD: ppb.c,v 1.69 2019/07/09 12:13:42 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 1996, 1998 Christopher G. Demetriou.  All rights reserved.
@@ -31,7 +31,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ppb.c,v 1.64 2018/12/07 09:36:26 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ppb.c,v 1.69 2019/07/09 12:13:42 msaitoh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_ppb.h"
+#endif
 
 #ifdef _KERNEL_OPT
 #include "opt_ppb.h"
@@ -58,8 +62,8 @@ __KERNEL_RCSID(0, "$NetBSD: ppb.c,v 1.64 2018/12/07 09:36:26 msaitoh Exp $");
 	(PCIE_SLCSR_ABP | PCIE_SLCSR_PFD | PCIE_SLCSR_MSC |	\
 	 PCIE_SLCSR_PDC | PCIE_SLCSR_CC | PCIE_SLCSR_LACS)
 
-static const char pcie_linkspeed_strings[4][5] = {
-	"1.25", "2.5", "5.0", "8.0",
+static const char pcie_linkspeed_strings[5][5] = {
+	"1.25", "2.5", "5.0", "8.0", "16.0"
 };
 
 int	ppb_printevent = 0; /* Print event type if the value is not 0 */
@@ -218,6 +222,7 @@ ppbattach(device_t parent, device_t self, void *aux)
 	char intrbuf[PCI_INTRSTR_LEN];
 #endif
 	pcireg_t busdata, reg;
+	bool second_configured = false;
 
 	pci_aprint_devinfo(pa, NULL);
 
@@ -225,9 +230,9 @@ ppbattach(device_t parent, device_t self, void *aux)
 	sc->sc_tag = pa->pa_tag;
 	sc->sc_dev = self;
 
-	busdata = pci_conf_read(pc, pa->pa_tag, PPB_REG_BUSINFO);
+	busdata = pci_conf_read(pc, pa->pa_tag, PCI_BRIDGE_BUS_REG);
 
-	if (PPB_BUSINFO_SECONDARY(busdata) == 0) {
+	if (PCI_BRIDGE_BUS_NUM_SECONDARY(busdata) == 0) {
 		aprint_normal_dev(self, "not configured by system firmware\n");
 		return;
 	}
@@ -241,9 +246,9 @@ ppbattach(device_t parent, device_t self, void *aux)
 	 * decompose our tag.
 	 */
 	/* sanity check. */
-	if (pa->pa_bus != PPB_BUSINFO_PRIMARY(busdata))
+	if (pa->pa_bus != PCI_BRIDGE_BUS_NUM_PRIMARY(busdata))
 		panic("ppbattach: bus in tag (%d) != bus in reg (%d)",
-		    pa->pa_bus, PPB_BUSINFO_PRIMARY(busdata));
+		    pa->pa_bus, PCI_BRIDGE_BUS_NUM_PRIMARY(busdata));
 #endif
 
 	/* Check for PCI Express capabilities and setup hotplug support. */
@@ -354,6 +359,66 @@ ppbattach(device_t parent, device_t self, void *aux)
 	}
 #endif /* PPB_USEINTR */
 
+	/* Configuration test */
+	if (PCI_BRIDGE_BUS_NUM_SECONDARY(busdata) != 0) {
+		uint32_t base, limit;
+
+		/* I/O region test */
+		reg = pci_conf_read(pc, pa->pa_tag, PCI_BRIDGE_STATIO_REG);
+		base = PCI_BRIDGE_STATIO_IOBASE_ADDR(reg);
+		limit = PCI_BRIDGE_STATIO_IOLIMIT_ADDR(reg);
+		if (PCI_BRIDGE_IO_32BITS(reg)) {
+			reg = pci_conf_read(pc, pa->pa_tag,
+			    PCI_BRIDGE_IOHIGH_REG);
+			base |= __SHIFTOUT(reg, PCI_BRIDGE_IOHIGH_BASE) << 16;
+			limit |= __SHIFTOUT(reg, PCI_BRIDGE_IOHIGH_LIMIT) <<16;
+		}
+		if (base < limit) {
+			second_configured = true;
+			goto configure;
+		}
+
+		/* Non-prefetchable memory region test */
+		reg = pci_conf_read(pc, pa->pa_tag, PCI_BRIDGE_MEMORY_REG);
+		base = PCI_BRIDGE_MEMORY_BASE_ADDR(reg);
+		limit = PCI_BRIDGE_MEMORY_LIMIT_ADDR(reg);
+		if (base < limit) {
+			second_configured = true;
+			goto configure;
+		}
+
+		/* Prefetchable memory region test */
+		reg = pci_conf_read(pc, pa->pa_tag,
+		    PCI_BRIDGE_PREFETCHMEM_REG);
+		base = PCI_BRIDGE_PREFETCHMEM_BASE_ADDR(reg);
+		limit = PCI_BRIDGE_PREFETCHMEM_LIMIT_ADDR(reg);
+
+		if (PCI_BRIDGE_PREFETCHMEM_64BITS(reg)) {
+			reg = pci_conf_read(pc, pa->pa_tag,
+			    PCI_BRIDGE_IOHIGH_REG);
+			base |= (uint64_t)pci_conf_read(pc, pa->pa_tag,
+			    PCI_BRIDGE_PREFETCHBASEUP32_REG) << 32;
+			limit |= (uint64_t)pci_conf_read(pc, pa->pa_tag,
+			    PCI_BRIDGE_PREFETCHLIMITUP32_REG) << 32;
+		}
+		if (base < limit) {
+			second_configured = true;
+			goto configure;
+		}
+	}
+
+configure:
+	/*
+	 * If the secondary bus is configured and the bus mastering is not
+	 * enabled, enable it.
+	 */
+	if (second_configured) {
+		reg = pci_conf_read(pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
+		if ((reg & PCI_COMMAND_MASTER_ENABLE) == 0)
+			pci_conf_write(pc, pa->pa_tag, PCI_COMMAND_STATUS_REG,
+			    reg | PCI_COMMAND_MASTER_ENABLE);
+	}
+
 	if (!pmf_device_register(self, ppb_suspend, ppb_resume))
 		aprint_error_dev(self, "couldn't establish power handler\n");
 
@@ -369,8 +434,8 @@ ppbattach(device_t parent, device_t self, void *aux)
 	pba.pba_dmat64 = pa->pa_dmat64;
 	pba.pba_pc = pc;
 	pba.pba_flags = pa->pa_flags & ~PCI_FLAGS_MRM_OKAY;
-	pba.pba_bus = PPB_BUSINFO_SECONDARY(busdata);
-	pba.pba_sub = PPB_BUSINFO_SUBORDINATE(busdata);
+	pba.pba_bus = PCI_BRIDGE_BUS_NUM_SECONDARY(busdata);
+	pba.pba_sub = PCI_BRIDGE_BUS_NUM_SUBORDINATE(busdata);
 	pba.pba_bridgetag = &sc->sc_tag;
 	pba.pba_intrswiz = pa->pa_intrswiz;
 	pba.pba_intrtag = pa->pa_intrtag;

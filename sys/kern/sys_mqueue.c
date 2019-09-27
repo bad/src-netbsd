@@ -1,4 +1,4 @@
-/*	$NetBSD: sys_mqueue.c,v 1.43 2018/08/19 15:10:23 jakllsch Exp $	*/
+/*	$NetBSD: sys_mqueue.c,v 1.45 2019/09/15 20:51:03 christos Exp $	*/
 
 /*
  * Copyright (c) 2007-2011 Mindaugas Rasiukevicius <rmind at NetBSD org>
@@ -43,7 +43,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sys_mqueue.c,v 1.43 2018/08/19 15:10:23 jakllsch Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sys_mqueue.c,v 1.45 2019/09/15 20:51:03 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/types.h>
@@ -614,6 +614,9 @@ sys_mq_open(struct lwp *l, const struct sys_mq_open_args *uap,
 	struct mq_attr *attr = NULL, a;
 	int error;
 
+	if ((SCARG(uap, oflag) & O_EXEC) != 0)
+		return EINVAL;
+
 	if ((SCARG(uap, oflag) & O_CREAT) != 0 && SCARG(uap, attr) != NULL) {
 		error = copyin(SCARG(uap, attr), &a, sizeof(a));
 		if (error)
@@ -807,6 +810,8 @@ mq_send1(mqd_t mqdes, const char *msg_ptr, size_t msg_len, u_int msg_prio,
 		return EINVAL;
 
 	/* Allocate a new message */
+	if (msg_len > mq_max_msgsize)
+		return EMSGSIZE;
 	size = sizeof(struct mq_msg) + msg_len;
 	if (size > mq_max_msgsize)
 		return EMSGSIZE;

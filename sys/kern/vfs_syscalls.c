@@ -1,4 +1,4 @@
-/*	$NetBSD: vfs_syscalls.c,v 1.518 2018/01/09 03:31:13 christos Exp $	*/
+/*	$NetBSD: vfs_syscalls.c,v 1.537 2019/09/26 01:34:16 christos Exp $	*/
 
 /*-
  * Copyright (c) 2008, 2009 The NetBSD Foundation, Inc.
@@ -70,7 +70,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: vfs_syscalls.c,v 1.518 2018/01/09 03:31:13 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: vfs_syscalls.c,v 1.537 2019/09/26 01:34:16 christos Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_fileassoc.h"
@@ -108,6 +108,7 @@ __KERNEL_RCSID(0, "$NetBSD: vfs_syscalls.c,v 1.518 2018/01/09 03:31:13 christos 
 #include <sys/module.h>
 #include <sys/buf.h>
 #include <sys/event.h>
+#include <sys/compat_stub.h>
 
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/specfs/specdev.h>
@@ -141,7 +142,6 @@ static int fd_nameiat(struct lwp *, int, struct nameidata *);
 static int fd_nameiat_simple_user(struct lwp *, int, const char *,
     namei_simple_flags_t, struct vnode **);
 
-
 /*
  * This table is used to maintain compatibility with 4.3BSD
  * and NetBSD 0.9 mount syscalls - and possibly other systems.
@@ -163,7 +163,7 @@ const char * const mountcompatnames[] = {
 	MOUNT_AFS,	/* 9 */
 };
 
-const int nmountcompatnames = __arraycount(mountcompatnames);
+const u_int nmountcompatnames = __arraycount(mountcompatnames);
 
 static int 
 fd_nameiat(struct lwp *l, int fdat, struct nameidata *ndp)
@@ -275,6 +275,15 @@ mount_update(struct lwp *l, struct vnode *vp, const char *path, int flags,
 	    (mp->mnt_flag & MNT_RDONLY) == 0 &&
 	    (mp->mnt_iflag & IMNT_CAN_RWTORO) == 0) {
 		error = EOPNOTSUPP;	/* Needs translation */
+		goto out;
+	}
+
+	/*
+	 * Enabling MNT_UNION requires a covered mountpoint and
+	 * must not happen on the root mount.
+	 */
+	if ((flags & MNT_UNION) != 0 && mp->mnt_vnodecovered == NULLVP) {
+		error = EOPNOTSUPP;
 		goto out;
 	}
 
@@ -1178,7 +1187,7 @@ do_sys_pstatvfs(struct lwp *l, const char *path, int flags, struct statvfs *sb)
 
 /* ARGSUSED */
 int
-sys_statvfs1(struct lwp *l, const struct sys_statvfs1_args *uap, register_t *retval)
+sys___statvfs190(struct lwp *l, const struct sys___statvfs190_args *uap, register_t *retval)
 {
 	/* {
 		syscallarg(const char *) path;
@@ -1217,7 +1226,7 @@ do_sys_fstatvfs(struct lwp *l, int fd, int flags, struct statvfs *sb)
 
 /* ARGSUSED */
 int
-sys_fstatvfs1(struct lwp *l, const struct sys_fstatvfs1_args *uap, register_t *retval)
+sys___fstatvfs190(struct lwp *l, const struct sys___fstatvfs190_args *uap, register_t *retval)
 {
 	/* {
 		syscallarg(int) fd;
@@ -1298,7 +1307,8 @@ out:
 }
 
 int
-sys_getvfsstat(struct lwp *l, const struct sys_getvfsstat_args *uap, register_t *retval)
+sys___getvfsstat90(struct lwp *l, const struct sys___getvfsstat90_args *uap,
+    register_t *retval)
 {
 	/* {
 		syscallarg(struct statvfs *) buf;
@@ -1563,6 +1573,13 @@ do_open(lwp_t *l, struct vnode *dvp, struct pathbuf *pb, int open_flags,
 		open_flags &= ~(int)O_SEARCH;
 	}
 
+	/*
+	 * Only one of the O_EXEC, O_RDONLY, O_WRONLY and O_RDWR flags
+	 * may be specified.
+	 */     
+	if ((open_flags & O_EXEC) && (open_flags & O_ACCMODE))
+		return EINVAL;
+
 	flags = FFLAGS(open_flags);
 	if ((flags & (FREAD | FWRITE)) == 0)
 		return EINVAL;
@@ -1624,10 +1641,6 @@ fd_open(const char *path, int open_flags, int open_mode, int *fd)
 	return error;
 }
 
-/*
- * Check permissions, allocate an open file structure,
- * and call the device open routine if any.
- */
 static int
 do_sys_openat(lwp_t *l, int fdat, const char *path, int flags,
     int mode, int *fd)
@@ -1635,22 +1648,30 @@ do_sys_openat(lwp_t *l, int fdat, const char *path, int flags,
 	file_t *dfp = NULL;
 	struct vnode *dvp = NULL;
 	struct pathbuf *pb;
+	const char *pathstring = NULL;
 	int error;
 
-#ifdef COMPAT_10	/* XXX: and perhaps later */
 	if (path == NULL) {
-		pb = pathbuf_create(".");
-		if (pb == NULL)
-			return ENOMEM;
-	} else
-#endif
-	{
+		MODULE_HOOK_CALL(vfs_openat_10_hook, (&pb), enosys(), error);
+		if (error == ENOSYS)
+			goto no_compat;
+		if (error)
+			return error;
+	} else {
+no_compat:
 		error = pathbuf_copyin(path, &pb);
 		if (error)
 			return error;
 	}
 
-	if (fdat != AT_FDCWD) {
+	pathstring = pathbuf_stringcopy_get(pb);
+
+	/* 
+	 * fdat is ignored if:
+	 * 1) if fdat is AT_FDCWD, which means use current directory as base.
+	 * 2) if path is absolute, then fdat is useless.
+	 */
+	if (fdat != AT_FDCWD && pathstring[0] != '/') {
 		/* fd_getvnode() will use the descriptor for us */
 		if ((error = fd_getvnode(fdat, &dfp)) != 0)
 			goto out;
@@ -1663,6 +1684,7 @@ do_sys_openat(lwp_t *l, int fdat, const char *path, int flags,
 	if (dfp != NULL)
 		fd_putfile(fdat);
 out:
+	pathbuf_stringcopy_put(pb, pathstring);
 	pathbuf_destroy(pb);
 	return error;
 }
@@ -2118,7 +2140,7 @@ do_fhstatvfs(struct lwp *l, const void *ufhp, size_t fhsize, struct statvfs *sb,
 
 /* ARGSUSED */
 int
-sys___fhstatvfs140(struct lwp *l, const struct sys___fhstatvfs140_args *uap, register_t *retval)
+sys___fhstatvfs190(struct lwp *l, const struct sys___fhstatvfs190_args *uap, register_t *retval)
 {
 	/* {
 		syscallarg(const void *) fhp;
@@ -2137,6 +2159,25 @@ sys___fhstatvfs140(struct lwp *l, const struct sys___fhstatvfs140_args *uap, reg
 	return error;
 }
 
+int
+do_posix_mknodat(struct lwp *l, int fdat, const char *pathname, mode_t mode,
+    dev_t dev)
+{
+
+	/*
+	 * The POSIX mknod(2) call is an alias for mkfifo(2) for S_IFIFO
+	 * in mode and dev=0.
+	 *
+	 * In all the other cases it's implementation defined behavior.
+	 */
+
+	if ((mode & S_IFIFO) && dev == 0)
+		return do_sys_mkfifoat(l, fdat, pathname, mode);
+	else
+		return do_sys_mknodat(l, fdat, pathname, mode, dev,
+		    UIO_USERSPACE);
+}
+
 /*
  * Create a special file.
  */
@@ -2150,8 +2191,8 @@ sys___mknod50(struct lwp *l, const struct sys___mknod50_args *uap,
 		syscallarg(mode_t) mode;
 		syscallarg(dev_t) dev;
 	} */
-	return do_sys_mknodat(l, AT_FDCWD, SCARG(uap, path), SCARG(uap, mode),
-	    SCARG(uap, dev), retval, UIO_USERSPACE);
+	return do_posix_mknodat(l, AT_FDCWD, SCARG(uap, path),
+	    SCARG(uap, mode), SCARG(uap, dev));
 }
 
 int
@@ -2166,20 +2207,20 @@ sys_mknodat(struct lwp *l, const struct sys_mknodat_args *uap,
 		syscallarg(dev_t) dev;
 	} */
 
-	return do_sys_mknodat(l, SCARG(uap, fd), SCARG(uap, path), 
-	    SCARG(uap, mode), SCARG(uap, dev), retval, UIO_USERSPACE);
+	return do_posix_mknodat(l, SCARG(uap, fd), SCARG(uap, path),
+	    SCARG(uap, mode), SCARG(uap, dev));
 }
 
 int
 do_sys_mknod(struct lwp *l, const char *pathname, mode_t mode, dev_t dev,
-    register_t *retval, enum uio_seg seg)
+    enum uio_seg seg)
 {
-	return do_sys_mknodat(l, AT_FDCWD, pathname, mode, dev, retval, seg);
+	return do_sys_mknodat(l, AT_FDCWD, pathname, mode, dev, seg);
 }
 
 int
 do_sys_mknodat(struct lwp *l, int fdat, const char *pathname, mode_t mode,
-    dev_t dev, register_t *retval, enum uio_seg seg)
+    dev_t dev, enum uio_seg seg)
 {
 	struct proc *p = l->l_proc;
 	struct vnode *vp;
@@ -3880,23 +3921,31 @@ do_sys_utimes(struct lwp *l, struct vnode *vp, const char *path, int flag,
 		struct timeval tv[2];
 
 		if (seg != UIO_SYSSPACE) {
-			error = copyin(tptr, tv, sizeof (tv));
+			error = copyin(tptr, tv, sizeof(tv));
 			if (error != 0)
 				return error;
 			tptr = tv;
 		}
 
-		if ((tv[0].tv_usec == UTIME_NOW) || 
-		    (tv[0].tv_usec == UTIME_OMIT))
-			ts[0].tv_nsec = tv[0].tv_usec;
-		else
-			TIMEVAL_TO_TIMESPEC(&tptr[0], &ts[0]);
+		if ((tptr[0].tv_usec == UTIME_NOW) || 
+		    (tptr[0].tv_usec == UTIME_OMIT))
+			ts[0].tv_nsec = tptr[0].tv_usec;
+		else {
+			if (tptr[0].tv_usec < 0 || tptr[0].tv_usec >= 1000000)
+				return EINVAL;
 
-		if ((tv[1].tv_usec == UTIME_NOW) || 
-		    (tv[1].tv_usec == UTIME_OMIT))
-			ts[1].tv_nsec = tv[1].tv_usec;
-		else
+			TIMEVAL_TO_TIMESPEC(&tptr[0], &ts[0]);
+		}
+
+		if ((tptr[1].tv_usec == UTIME_NOW) || 
+		    (tptr[1].tv_usec == UTIME_OMIT))
+			ts[1].tv_nsec = tptr[1].tv_usec;
+		else {
+			if (tptr[1].tv_usec < 0 || tptr[1].tv_usec >= 1000000)
+				return EINVAL;
+
 			TIMEVAL_TO_TIMESPEC(&tptr[1], &ts[1]);
+		}
 
 		tsptr = &ts[0];	
 	}
@@ -4210,9 +4259,18 @@ do_sys_renameat(struct lwp *l, int fromfd, const char *from, int tofd,
 	 */
 	fdvp = fnd.ni_dvp;
 	fvp = fnd.ni_vp;
+	mp = fdvp->v_mount;
 	KASSERT(fdvp != NULL);
 	KASSERT(fvp != NULL);
 	KASSERT((fdvp == fvp) || (VOP_ISLOCKED(fdvp) == LK_EXCLUSIVE));
+	/*
+	 * Bracket the operation with fstrans_start()/fstrans_done().
+	 *
+	 * Inside the bracket this file system cannot be unmounted so
+	 * a vnode on this file system cannot change its v_mount.
+	 * A vnode on another file system may still change to dead mount.
+	 */
+	fstrans_start(mp);
 
 	/*
 	 * Make sure neither fdvp nor fvp is locked.
@@ -4297,38 +4355,16 @@ do_sys_renameat(struct lwp *l, int fromfd, const char *from, int tofd,
 	}
 
 	/*
-	 * Get the mount point.  If the file system has been unmounted,
-	 * which it may be because we're not holding any vnode locks,
-	 * then v_mount will be NULL.  We're not really supposed to
-	 * read v_mount without holding the vnode lock, but since we
-	 * have fdvp referenced, if fdvp->v_mount changes then at worst
-	 * it will be set to NULL, not changed to another mount point.
-	 * And, of course, since it is up to the file system to
-	 * determine the real lock order, we can't lock both fdvp and
-	 * tdvp at the same time.
-	 */
-	mp = fdvp->v_mount;
-	if (mp == NULL) {
-		error = ENOENT;
-		goto abort1;
-	}
-
-	/*
-	 * Make sure the mount points match.  Again, although we don't
-	 * hold any vnode locks, the v_mount fields may change -- but
-	 * at worst they will change to NULL, so this will never become
-	 * a cross-device rename, because we hold vnode references.
+	 * Make sure the mount points match.  Although we don't hold
+	 * any vnode locks, the v_mount on fdvp file system are stable.
 	 *
-	 * XXX Because nothing is locked and the compiler may reorder
-	 * things here, unmounting the file system at an inopportune
-	 * moment may cause rename to fail with EXDEV when it really
-	 * should fail with ENOENT.
+	 * Unmounting another file system at an inopportune moment may
+	 * cause tdvp to disappear and change its v_mount to dead.
+	 *
+	 * So in either case different v_mount means cross-device rename.
 	 */
+	KASSERT(mp != NULL);
 	tmp = tdvp->v_mount;
-	if (tmp == NULL) {
-		error = ENOENT;
-		goto abort1;
-	}
 
 	if (mp != tmp) {
 		error = EXDEV;
@@ -4483,6 +4519,7 @@ do_sys_renameat(struct lwp *l, int fromfd, const char *from, int tofd,
 	 * destroy the pathbufs.
 	 */
 	VFS_RENAMELOCK_EXIT(mp);
+	fstrans_done(mp);
 	goto out2;
 
 abort3:	if ((tvp != NULL) && (tvp != tdvp))
@@ -4496,6 +4533,7 @@ abort1:	VOP_ABORTOP(tdvp, &tnd.ni_cnd);
 abort0:	VOP_ABORTOP(fdvp, &fnd.ni_cnd);
 	vrele(fdvp);
 	vrele(fvp);
+	fstrans_done(mp);
 out2:	pathbuf_destroy(tpb);
 out1:	pathbuf_destroy(fpb);
 out0:	return error;
@@ -4535,7 +4573,7 @@ sys_mkdirat(struct lwp *l, const struct sys_mkdirat_args *uap,
 int
 do_sys_mkdir(const char *path, mode_t mode, enum uio_seg seg)
 {
-	return do_sys_mkdirat(NULL, AT_FDCWD, path, mode, UIO_USERSPACE);
+	return do_sys_mkdirat(NULL, AT_FDCWD, path, mode, seg);
 }
 
 static int

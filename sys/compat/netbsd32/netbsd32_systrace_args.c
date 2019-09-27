@@ -1,4 +1,4 @@
-/* $NetBSD: netbsd32_systrace_args.c,v 1.29 2018/12/24 21:27:37 mrg Exp $ */
+/* $NetBSD: netbsd32_systrace_args.c,v 1.33 2019/09/22 23:03:20 christos Exp $ */
 
 /*
  * System call argument to DTrace register array converstion.
@@ -1094,6 +1094,7 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 0;
 		break;
 	}
+#if defined(QUOTA) || !defined(_KERNEL_OPT)
 	/* netbsd32_quotactl */
 	case 148: {
 		const struct compat_50_netbsd32_quotactl_args *p = params;
@@ -1109,6 +1110,8 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 0;
 		break;
 	}
+#else
+#endif
 	/* netbsd32_ogetsockname */
 	case 150: {
 		const struct compat_43_netbsd32_ogetsockname_args *p = params;
@@ -1246,7 +1249,6 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 5;
 		break;
 	}
-#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_gettime */
 	case 175: {
 		const struct compat_30_netbsd32_ntp_gettime_args *p = params;
@@ -1254,6 +1256,7 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 1;
 		break;
 	}
+#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_adjtime */
 	case 176: {
 		const struct netbsd32_ntp_adjtime_args *p = params;
@@ -2427,8 +2430,8 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 	}
 	/* netbsd32_getvfsstat */
 	case 356: {
-		const struct netbsd32_getvfsstat_args *p = params;
-		uarg[0] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		const struct compat_90_netbsd32_getvfsstat_args *p = params;
+		uarg[0] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfs90p_t */
 		iarg[1] = SCARG(p, bufsize); /* netbsd32_size_t */
 		iarg[2] = SCARG(p, flags); /* int */
 		*n_args = 3;
@@ -2436,18 +2439,18 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 	}
 	/* netbsd32_statvfs1 */
 	case 357: {
-		const struct netbsd32_statvfs1_args *p = params;
+		const struct compat_90_netbsd32_statvfs1_args *p = params;
 		uarg[0] = (intptr_t) SCARG(p, path).i32; /* netbsd32_charp */
-		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfs90p_t */
 		iarg[2] = SCARG(p, flags); /* int */
 		*n_args = 3;
 		break;
 	}
 	/* netbsd32_fstatvfs1 */
 	case 358: {
-		const struct netbsd32_fstatvfs1_args *p = params;
+		const struct compat_90_netbsd32_fstatvfs1_args *p = params;
 		iarg[0] = SCARG(p, fd); /* int */
-		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfs90p_t */
 		iarg[2] = SCARG(p, flags); /* int */
 		*n_args = 3;
 		break;
@@ -2456,7 +2459,7 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 	case 359: {
 		const struct compat_30_netbsd32_fhstatvfs1_args *p = params;
 		uarg[0] = (intptr_t) SCARG(p, fhp).i32; /* netbsd32_fhandlep_t */
-		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfs90p_t */
 		iarg[2] = SCARG(p, flags); /* int */
 		*n_args = 3;
 		break;
@@ -2772,7 +2775,6 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 2;
 		break;
 	}
-#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_gettime */
 	case 393: {
 		const struct compat_50_netbsd32_ntp_gettime_args *p = params;
@@ -2780,8 +2782,6 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 1;
 		break;
 	}
-#else
-#endif
 	/* netbsd32___socket30 */
 	case 394: {
 		const struct netbsd32___socket30_args *p = params;
@@ -2809,12 +2809,12 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 3;
 		break;
 	}
-	/* netbsd32___fhstatvfs140 */
+	/* netbsd32_fhstatvfs1 */
 	case 397: {
-		const struct netbsd32___fhstatvfs140_args *p = params;
+		const struct compat_90_netbsd32_fhstatvfs1_args *p = params;
 		uarg[0] = (intptr_t) SCARG(p, fhp).i32; /* netbsd32_pointer_t */
 		iarg[1] = SCARG(p, fh_size); /* netbsd32_size_t */
-		uarg[2] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		uarg[2] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfs90p_t */
 		iarg[3] = SCARG(p, flags); /* int */
 		*n_args = 4;
 		break;
@@ -3385,6 +3385,7 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 2;
 		break;
 	}
+#if defined(QUOTA) || !defined(_KERNEL_OPT)
 	/* netbsd32___quotactl */
 	case 473: {
 		const struct netbsd32___quotactl_args *p = params;
@@ -3393,6 +3394,8 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		*n_args = 2;
 		break;
 	}
+#else
+#endif
 	/* netbsd32_posix_spawn */
 	case 474: {
 		const struct netbsd32_posix_spawn_args *p = params;
@@ -3487,6 +3490,43 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		iarg[1] = SCARG(p, id); /* id_t */
 		uarg[2] = (intptr_t) SCARG(p, clock_id).i32; /* netbsd32_clockidp_t */
 		*n_args = 3;
+		break;
+	}
+	/* netbsd32___getvfsstat90 */
+	case 483: {
+		const struct netbsd32___getvfsstat90_args *p = params;
+		uarg[0] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		uarg[1] = SCARG(p, bufsize); /* size_t */
+		iarg[2] = SCARG(p, flags); /* int */
+		*n_args = 3;
+		break;
+	}
+	/* netbsd32___statvfs190 */
+	case 484: {
+		const struct netbsd32___statvfs190_args *p = params;
+		uarg[0] = (intptr_t) SCARG(p, path).i32; /* netbsd32_charp */
+		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		iarg[2] = SCARG(p, flags); /* int */
+		*n_args = 3;
+		break;
+	}
+	/* netbsd32___fstatvfs190 */
+	case 485: {
+		const struct netbsd32___fstatvfs190_args *p = params;
+		iarg[0] = SCARG(p, fd); /* int */
+		uarg[1] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		iarg[2] = SCARG(p, flags); /* int */
+		*n_args = 3;
+		break;
+	}
+	/* netbsd32___fhstatvfs190 */
+	case 486: {
+		const struct netbsd32___fhstatvfs190_args *p = params;
+		uarg[0] = (intptr_t) SCARG(p, fhp).i32; /* netbsd32_voidp */
+		uarg[1] = SCARG(p, fh_size); /* size_t */
+		uarg[2] = (intptr_t) SCARG(p, buf).i32; /* netbsd32_statvfsp_t */
+		iarg[3] = SCARG(p, flags); /* int */
+		*n_args = 4;
 		break;
 	}
 	default:
@@ -5243,6 +5283,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	/* sys_setsid */
 	case 147:
 		break;
+#if defined(QUOTA) || !defined(_KERNEL_OPT)
 	/* netbsd32_quotactl */
 	case 148:
 		switch(ndx) {
@@ -5265,6 +5306,8 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	/* sys_quota */
 	case 149:
 		break;
+#else
+#endif
 	/* netbsd32_ogetsockname */
 	case 150:
 		switch(ndx) {
@@ -5511,7 +5554,6 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
-#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_gettime */
 	case 175:
 		switch(ndx) {
@@ -5522,6 +5564,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_adjtime */
 	case 176:
 		switch(ndx) {
@@ -7476,7 +7519,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	case 356:
 		switch(ndx) {
 		case 0:
-			p = "netbsd32_statvfsp_t";
+			p = "netbsd32_statvfs90p_t";
 			break;
 		case 1:
 			p = "netbsd32_size_t";
@@ -7495,7 +7538,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			p = "netbsd32_charp";
 			break;
 		case 1:
-			p = "netbsd32_statvfsp_t";
+			p = "netbsd32_statvfs90p_t";
 			break;
 		case 2:
 			p = "int";
@@ -7511,7 +7554,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			p = "int";
 			break;
 		case 1:
-			p = "netbsd32_statvfsp_t";
+			p = "netbsd32_statvfs90p_t";
 			break;
 		case 2:
 			p = "int";
@@ -7527,7 +7570,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			p = "netbsd32_fhandlep_t";
 			break;
 		case 1:
-			p = "netbsd32_statvfsp_t";
+			p = "netbsd32_statvfs90p_t";
 			break;
 		case 2:
 			p = "int";
@@ -8117,7 +8160,6 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
-#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_gettime */
 	case 393:
 		switch(ndx) {
@@ -8128,8 +8170,6 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
-#else
-#endif
 	/* netbsd32___socket30 */
 	case 394:
 		switch(ndx) {
@@ -8178,7 +8218,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
-	/* netbsd32___fhstatvfs140 */
+	/* netbsd32_fhstatvfs1 */
 	case 397:
 		switch(ndx) {
 		case 0:
@@ -8188,7 +8228,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			p = "netbsd32_size_t";
 			break;
 		case 2:
-			p = "netbsd32_statvfsp_t";
+			p = "netbsd32_statvfs90p_t";
 			break;
 		case 3:
 			p = "int";
@@ -9218,6 +9258,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+#if defined(QUOTA) || !defined(_KERNEL_OPT)
 	/* netbsd32___quotactl */
 	case 473:
 		switch(ndx) {
@@ -9231,6 +9272,8 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+#else
+#endif
 	/* netbsd32_posix_spawn */
 	case 474:
 		switch(ndx) {
@@ -9415,6 +9458,73 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		case 2:
 			p = "netbsd32_clockidp_t";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* netbsd32___getvfsstat90 */
+	case 483:
+		switch(ndx) {
+		case 0:
+			p = "netbsd32_statvfsp_t";
+			break;
+		case 1:
+			p = "size_t";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* netbsd32___statvfs190 */
+	case 484:
+		switch(ndx) {
+		case 0:
+			p = "netbsd32_charp";
+			break;
+		case 1:
+			p = "netbsd32_statvfsp_t";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* netbsd32___fstatvfs190 */
+	case 485:
+		switch(ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "netbsd32_statvfsp_t";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* netbsd32___fhstatvfs190 */
+	case 486:
+		switch(ndx) {
+		case 0:
+			p = "netbsd32_voidp";
+			break;
+		case 1:
+			p = "size_t";
+			break;
+		case 2:
+			p = "netbsd32_statvfsp_t";
+			break;
+		case 3:
+			p = "int";
 			break;
 		default:
 			break;
@@ -10055,6 +10165,7 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* sys_setsid */
 	case 147:
+#if defined(QUOTA) || !defined(_KERNEL_OPT)
 	/* netbsd32_quotactl */
 	case 148:
 		if (ndx == 0 || ndx == 1)
@@ -10062,6 +10173,8 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* sys_quota */
 	case 149:
+#else
+#endif
 	/* netbsd32_ogetsockname */
 	case 150:
 		if (ndx == 0 || ndx == 1)
@@ -10137,12 +10250,12 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "netbsd32_ssize_t";
 		break;
-#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_gettime */
 	case 175:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
+#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_adjtime */
 	case 176:
 		if (ndx == 0 || ndx == 1)
@@ -11006,14 +11119,11 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
-#if defined(NTP) || !defined(_KERNEL_OPT)
 	/* netbsd32_ntp_gettime */
 	case 393:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
-#else
-#endif
 	/* netbsd32___socket30 */
 	case 394:
 		if (ndx == 0 || ndx == 1)
@@ -11029,7 +11139,7 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
-	/* netbsd32___fhstatvfs140 */
+	/* netbsd32_fhstatvfs1 */
 	case 397:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
@@ -11342,11 +11452,14 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
+#if defined(QUOTA) || !defined(_KERNEL_OPT)
 	/* netbsd32___quotactl */
 	case 473:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
+#else
+#endif
 	/* netbsd32_posix_spawn */
 	case 474:
 		if (ndx == 0 || ndx == 1)
@@ -11389,6 +11502,26 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* netbsd32_clock_getcpuclockid2 */
 	case 482:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* netbsd32___getvfsstat90 */
+	case 483:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* netbsd32___statvfs190 */
+	case 484:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* netbsd32___fstatvfs190 */
+	case 485:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* netbsd32___fhstatvfs190 */
+	case 486:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

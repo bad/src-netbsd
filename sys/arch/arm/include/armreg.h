@@ -1,4 +1,4 @@
-/*	$NetBSD: armreg.h,v 1.124 2018/08/15 06:13:56 skrll Exp $	*/
+/*	$NetBSD: armreg.h,v 1.128 2019/08/12 23:31:48 jmcneill Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001 Ben Harris
@@ -523,12 +523,12 @@
 #define TTBCR_L_EPD0	__BIT(7)	// Don't use TTBR0
 #define TTBCR_L_T0SZ	__BITS(2,0)	// TTBR0 size offset
 
-#define NRRR_ORn(n)	__BITS(17+2*(n),16+2*(n)) // Outer Cacheable mappings
-#define NRRR_IRn(n)	__BITS(1+2*(n),0+2*(n)) // Inner Cacheable mappings
-#define NRRR_NC		0		// non-cacheable
-#define NRRR_WB_WA	1		// write-back write-allocate
-#define NRRR_WT		2		// write-through
-#define NRRR_WB		3		// write-back
+#define NMRR_ORn(n)	__BITS(17+2*(n),16+2*(n)) // Outer Cacheable mappings
+#define NMRR_IRn(n)	__BITS(1+2*(n),0+2*(n)) // Inner Cacheable mappings
+#define NMRR_NC		0		// non-cacheable
+#define NMRR_WBWA	1		// write-back write-allocate
+#define NMRR_WT		2		// write-through
+#define NMRR_WB		3		// write-back
 #define PRRR_NOSn(n)	__BITS(24+2*(n))// Memory region is Inner Shareable
 #define PRRR_NS1	__BIT(19)	// Normal Shareable S=1 is Shareable
 #define PRRR_NS0	__BIT(18)	// Normal Shareable S=0 is Shareable
@@ -870,8 +870,8 @@ ARMREG_READ_INLINE(l2ctrl, "p15,1,%0,c9,c0,2") /* A7/A15 L2 Control Register */
 /* cp10 c10 registers */
 ARMREG_READ_INLINE(prrr, "p15,0,%0,c10,c2,0") /* Primary Region Remap Register */
 ARMREG_WRITE_INLINE(prrr, "p15,0,%0,c10,c2,0") /* Primary Region Remap Register */
-ARMREG_READ_INLINE(nrrr, "p15,0,%0,c10,c2,1") /* Normal Region Remap Register */
-ARMREG_WRITE_INLINE(nrrr, "p15,0,%0,c10,c2,1") /* Normal Region Remap Register */
+ARMREG_READ_INLINE(nmrr, "p15,0,%0,c10,c2,1") /* Normal Memory Remap Register */
+ARMREG_WRITE_INLINE(nmrr, "p15,0,%0,c10,c2,1") /* Normal Memory Remap Register */
 /* cp15 c13 registers */
 ARMREG_READ_INLINE(contextidr, "p15,0,%0,c13,c0,1") /* Context ID Register */
 ARMREG_WRITE_INLINE(contextidr, "p15,0,%0,c13,c0,1") /* Context ID Register */
@@ -990,11 +990,41 @@ gtmr_cntv_ctl_write(uint32_t val)
 	armreg_cntv_ctl_write(val);
 }
 
+
+/*
+ * Counter-timer Physical Timer Control register
+ */
+
+static inline uint32_t
+gtmr_cntp_ctl_read(void)
+{
+
+	return armreg_cntp_ctl_read();
+}
+
 static inline void
 gtmr_cntp_ctl_write(uint32_t val)
 {
 
 	armreg_cntp_ctl_write(val);
+}
+
+
+/*
+ * Counter-timer Physical Timer TimerValue register
+ */
+static inline uint32_t
+gtmr_cntp_tval_read(void)
+{
+
+	return armreg_cntp_tval_read();
+}
+
+static inline void
+gtmr_cntp_tval_write(uint32_t val)
+{
+
+	armreg_cntp_tval_write(val);
 }
 
 
@@ -1017,6 +1047,24 @@ gtmr_cntv_tval_write(uint32_t val)
 
 
 /*
+ * Counter-timer Physical Timer CompareValue register
+ */
+static inline uint64_t
+gtmr_cntp_cval_read(void)
+{
+
+	return armreg_cntp_cval_read();
+}
+
+static inline void
+gtmr_cntp_cval_write(uint64_t val)
+{
+
+	armreg_cntp_cval_write(val);
+}
+
+
+/*
  * Counter-timer Virtual Timer CompareValue register
  */
 static inline uint64_t
@@ -1024,6 +1072,13 @@ gtmr_cntv_cval_read(void)
 {
 
 	return armreg_cntv_cval_read();
+}
+
+static inline void
+gtmr_cntv_cval_write(uint64_t val)
+{
+
+	armreg_cntv_cval_write(val);
 }
 
 #endif /* _KERNEL */

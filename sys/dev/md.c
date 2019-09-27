@@ -1,4 +1,4 @@
-/*	$NetBSD: md.c,v 1.80 2018/03/03 19:26:12 christos Exp $	*/
+/*	$NetBSD: md.c,v 1.82 2019/08/29 16:20:48 hannken Exp $	*/
 
 /*
  * Copyright (c) 1995 Gordon W. Ross, Leo Weppelman.
@@ -40,7 +40,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: md.c,v 1.80 2018/03/03 19:26:12 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: md.c,v 1.82 2019/08/29 16:20:48 hannken Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_md.h"
@@ -132,7 +132,8 @@ const struct cdevsw md_cdevsw = {
 };
 
 static struct dkdriver mddkdriver = {
-	.d_strategy = mdstrategy
+	.d_strategy = mdstrategy,
+	.d_minphys = minphys
 };
 
 CFATTACH_DECL3_NEW(md, sizeof(struct md_softc),
@@ -479,21 +480,19 @@ mdioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 	if ((sc = device_lookup_private(&md_cd, MD_UNIT(dev))) == NULL)
 		return ENXIO;
 
-	mutex_enter(&sc->sc_lock);
 	if (sc->sc_type != MD_UNCONFIGURED) {
 		error = disk_ioctl(&sc->sc_dkdev, dev, cmd, data, flag, l); 
 		if (error != EPASSTHROUGH) {
-			mutex_exit(&sc->sc_lock);
-			return 0;
+			return error;
 		}
 	}
 
 	/* If this is not the raw partition, punt! */
 	if (DISKPART(dev) != RAW_PART) {
-		mutex_exit(&sc->sc_lock);
 		return ENOTTY;
 	}
 
+	mutex_enter(&sc->sc_lock);
 	umd = (struct md_conf *)data;
 	error = EINVAL;
 	switch (cmd) {

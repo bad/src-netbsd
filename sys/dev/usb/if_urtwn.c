@@ -1,4 +1,4 @@
-/*	$NetBSD: if_urtwn.c,v 1.67 2018/12/20 15:16:07 tih Exp $	*/
+/*	$NetBSD: if_urtwn.c,v 1.72 2019/08/19 07:20:07 mrg Exp $	*/
 /*	$OpenBSD: if_urtwn.c,v 1.42 2015/02/10 23:25:46 mpi Exp $	*/
 
 /*-
@@ -25,7 +25,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_urtwn.c,v 1.67 2018/12/20 15:16:07 tih Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_urtwn.c,v 1.72 2019/08/19 07:20:07 mrg Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -42,6 +42,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_urtwn.c,v 1.67 2018/12/20 15:16:07 tih Exp $");
 #include <sys/module.h>
 #include <sys/conf.h>
 #include <sys/device.h>
+#include <sys/rndsource.h>
 
 #include <sys/bus.h>
 #include <machine/endian.h>
@@ -389,6 +390,9 @@ urtwn_attach(device_t parent, device_t self, void *aux)
 	callout_init(&sc->sc_calib_to, 0);
 	callout_setfunc(&sc->sc_calib_to, urtwn_calib_to, sc);
 
+	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
+	    RND_TYPE_NET, RND_FLAG_DEFAULT);
+
 	error = usbd_set_config_no(sc->sc_udev, 1, 0);
 	if (error != 0) {
 		aprint_error_dev(self, "failed to set configuration"
@@ -546,6 +550,8 @@ urtwn_detach(device_t self, int flags)
 	callout_halt(&sc->sc_scan_to, NULL);
 	callout_halt(&sc->sc_calib_to, NULL);
 
+	pmf_device_deregister(self);
+
 	if (ISSET(sc->sc_flags, URTWN_FLAG_ATTACHED)) {
 		urtwn_stop(ifp, 0);
 		usb_rem_task_wait(sc->sc_udev, &sc->sc_task, USB_TASKQ_DRIVER,
@@ -563,6 +569,8 @@ urtwn_detach(device_t self, int flags)
 	splx(s);
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev, sc->sc_dev);
+
+	rnd_detach_source(&sc->rnd_source);
 
 	callout_destroy(&sc->sc_scan_to);
 	callout_destroy(&sc->sc_calib_to);
@@ -813,15 +821,44 @@ urtwn_free_tx_list(struct urtwn_softc *sc)
 	}
 }
 
+static int
+urtwn_tx_beacon(struct urtwn_softc *sc, struct mbuf *m,
+    struct ieee80211_node *ni)
+{
+	struct urtwn_tx_data *data =
+	    urtwn_get_tx_data(sc, sc->ac2idx[WME_AC_VO]);
+	return urtwn_tx(sc, m, ni, data);
+}
+
 static void
 urtwn_task(void *arg)
 {
 	struct urtwn_softc *sc = arg;
+	struct ieee80211com *ic = &sc->sc_ic;
 	struct urtwn_host_cmd_ring *ring = &sc->cmdq;
 	struct urtwn_host_cmd *cmd;
 	int s;
 
 	DPRINTFN(DBG_FN, ("%s: %s\n", device_xname(sc->sc_dev), __func__));
+	if (ic->ic_state == IEEE80211_S_RUN && 
+	    (ic->ic_opmode == IEEE80211_M_HOSTAP ||
+	    ic->ic_opmode == IEEE80211_M_IBSS)) {
+
+		struct mbuf *m = ieee80211_beacon_alloc(ic, ic->ic_bss,
+		    &sc->sc_bo);
+		if (m == NULL) {
+			aprint_error_dev(sc->sc_dev,
+			    "could not allocate beacon");
+		}
+
+		if (urtwn_tx_beacon(sc, m, ic->ic_bss) != 0) {
+			m_freem(m);
+			aprint_error_dev(sc->sc_dev, "could not send beacon");
+		}
+
+		/* beacon is no longer needed */
+		m_freem(m);
+	}
 
 	/* Process host commands. */
 	s = splusb();
@@ -1058,13 +1095,13 @@ urtwn_fw_cmd(struct urtwn_softc *sc, uint8_t id, const void *buf, int len)
 			    &cp[1], 2);
 			urtwn_write_4(sc, R92C_HMEBOX(fwcur),
 			    cp[0] + (cp[3] << 8) + (cp[4] << 16) +
-			    (cp[5] << 24));
+			    ((uint32_t)cp[5] << 24));
 		} else {
 			urtwn_write_region(sc, R92E_HMEBOX_EXT(fwcur),
 			    &cp[4], 2);
 			urtwn_write_4(sc, R92C_HMEBOX(fwcur),
 			    cp[0] + (cp[1] << 8) + (cp[2] << 16) +
-			    (cp[3] << 24));
+			    ((uint32_t)cp[3] << 24));
 		}
 	} else {
 		urtwn_write_region(sc, R92C_HMEBOX(fwcur), cp, len);
@@ -2476,6 +2513,9 @@ urtwn_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	DPRINTFN(DBG_RX, ("%s: %s: Rx %d frames in one chunk\n",
 	    device_xname(sc->sc_dev), __func__, npkts));
 
+	if (npkts != 0)
+		rnd_add_uint32(&sc->rnd_source, npkts);
+
 	/* Process all of them. */
 	while (npkts-- > 0) {
 		if (__predict_false(len < (int)sizeof(*stat))) {
@@ -2941,6 +2981,21 @@ urtwn_ioctl(struct ifnet *ifp, u_long cmd, void *data)
 	case SIOCDELMULTI:
 		if ((error = ether_ioctl(ifp, cmd, data)) == ENETRESET) {
 			/* setup multicast filter, etc */
+			error = 0;
+		}
+		break;
+
+	case SIOCS80211CHANNEL:
+		/*
+		 * This allows for fast channel switching in monitor mode
+		 * (used by kismet). In IBSS mode, we must explicitly reset
+		 * the interface to generate a new beacon frame.
+		 */
+		error = ieee80211_ioctl(ic, cmd, data);
+		if (error == ENETRESET &&
+		    ic->ic_opmode == IEEE80211_M_MONITOR) {
+			urtwn_set_chan(sc, ic->ic_curchan,
+			    IEEE80211_HTINFO_2NDCHAN_NONE);
 			error = 0;
 		}
 		break;

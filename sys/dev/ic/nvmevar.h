@@ -1,4 +1,4 @@
-/*	$NetBSD: nvmevar.h,v 1.18 2018/12/01 15:07:58 jdolecek Exp $	*/
+/*	$NetBSD: nvmevar.h,v 1.20 2019/06/28 15:08:47 jmcneill Exp $	*/
 /*	$OpenBSD: nvmevar.h,v 1.8 2016/04/14 11:18:32 dlg Exp $ */
 
 /*
@@ -23,6 +23,7 @@
 #include <sys/mutex.h>
 #include <sys/pool.h>
 #include <sys/queue.h>
+#include <sys/buf.h>
 
 struct nvme_dmamem {
 	bus_dmamap_t		ndm_map;
@@ -139,6 +140,8 @@ struct nvme_softc {
 
 	uint32_t		sc_quirks;
 #define	NVME_QUIRK_DELAY_B4_CHK_RDY	__BIT(0)
+
+	char			sc_modelname[81];
 };
 
 #define	lemtoh16(p)	le16toh(*((uint16_t *)(p)))
@@ -152,6 +155,7 @@ struct nvme_attach_args {
 	uint16_t	naa_nsid;
 	uint32_t	naa_qentries;	/* total number of queue slots */
 	uint32_t	naa_maxphys;	/* maximum device transfer size */
+	const char	*naa_typename;	/* identifier */
 };
 
 int	nvme_attach(struct nvme_softc *);
@@ -164,9 +168,20 @@ int	nvme_intr_msi(void *);
 void	nvme_softintr_msi(void *);
 
 static __inline struct nvme_queue *
-nvme_get_q(struct nvme_softc *sc)
+nvme_get_q(struct nvme_softc *sc, struct buf *bp, bool waitok)
 {
-	return sc->sc_q[cpu_index(curcpu()) % sc->sc_nq];
+	struct cpu_info *ci = (bp && bp->b_ci) ? bp->b_ci : curcpu();
+
+	/*
+	 * Find a queue with available ccbs, preferring the originating CPU's queue.
+	 */
+
+	for (u_int qoff = 0; qoff < sc->sc_nq; qoff++) {
+		struct nvme_queue *q = sc->sc_q[(cpu_index(ci) + qoff) % sc->sc_nq];
+		if (!SIMPLEQ_EMPTY(&q->q_ccb_list) || waitok)
+			return q;
+	}
+	return NULL;
 }
 
 /*

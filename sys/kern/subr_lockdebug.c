@@ -1,4 +1,4 @@
-/*	$NetBSD: subr_lockdebug.c,v 1.69 2018/11/03 15:20:03 christos Exp $	*/
+/*	$NetBSD: subr_lockdebug.c,v 1.72 2019/05/28 07:39:16 ryo Exp $	*/
 
 /*-
  * Copyright (c) 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: subr_lockdebug.c,v 1.69 2018/11/03 15:20:03 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: subr_lockdebug.c,v 1.72 2019/05/28 07:39:16 ryo Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_ddb.h"
@@ -59,7 +59,11 @@ unsigned int		ld_panic;
 
 #ifdef LOCKDEBUG
 
+#ifdef __ia64__
+#define	LD_BATCH_SHIFT	16
+#else
 #define	LD_BATCH_SHIFT	9
+#endif
 #define	LD_BATCH	(1 << LD_BATCH_SHIFT)
 #define	LD_BATCH_MASK	(LD_BATCH - 1)
 #define	LD_MAX_LOCKS	1048576
@@ -768,7 +772,7 @@ lockdebug_dump(lockdebug_t *ld, void (*pr)(const char *, ...)
 	}
 
 	if (ld->ld_lockops->lo_dump != NULL)
-		(*ld->ld_lockops->lo_dump)(ld->ld_lock);
+		(*ld->ld_lockops->lo_dump)(ld->ld_lock, pr);
 
 	if (sleeper) {
 		(*pr)("\n");
@@ -908,7 +912,7 @@ lockdebug_show_all_locks_cpu(void (*pr)(const char *, ...) __printflike(1, 2),
 #ifdef MULTIPROCESSOR
 				lockdebug_show_trace(ci->ci_curlwp, pr);
 #else
-				lockdebug_show_trace(ci->ci_curlwp, pr);
+				lockdebug_show_trace(curlwp, pr);
 #endif
 			(*pr)("\n");
 		}
@@ -1037,7 +1041,7 @@ lockdebug_abort(const char *func, size_t line, const volatile void *lock,
 	    "current lwp  : %#018lx\n",
 	    ops->lo_name, func, line, msg, (long)lock,
 	    (int)cpu_index(curcpu()), (long)curlwp);
-	(*ops->lo_dump)(lock);
+	(*ops->lo_dump)(lock, printf_nolog);
 	printf_nolog("\n");
 
 	panic("lock error: %s: %s,%zu: %s: lock %p cpu %d lwp %p",
