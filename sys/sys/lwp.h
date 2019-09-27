@@ -1,4 +1,4 @@
-/*	$NetBSD: lwp.h,v 1.180 2018/11/28 19:46:22 mlelstv Exp $	*/
+/*	$NetBSD: lwp.h,v 1.186 2019/06/19 21:39:53 kamil Exp $	*/
 
 /*
  * Copyright (c) 2001, 2006, 2007, 2008, 2009, 2010
@@ -132,6 +132,7 @@ struct lwp {
 	callout_t	l_timeout_ch;	/* !: callout for tsleep */
 	u_int		l_emap_gen;	/* !: emap generation number */
 	kcondvar_t	l_waitcv;	/* a: vfork() wait */
+	bool		l_vforkwaiting;	/* a: vfork() waiting */
 
 #if PCU_UNIT_COUNT > 0
 	struct cpu_info	* volatile l_pcu_cpu[PCU_UNIT_COUNT];
@@ -180,10 +181,11 @@ struct lwp {
 	struct kauth_cred *l_cred;	/* !: cached credentials */
 	struct filedesc	*l_fd;		/* !: cached copy of proc::p_fd */
 	void		*l_emuldata;	/* !: kernel lwp-private data */
+	struct fstrans_lwp_info *l_fstrans; /* (: fstrans private data */
 	u_int		l_cv_signalled;	/* c: restarted by cv_signal() */
 	u_short		l_shlocks;	/* !: lockdebug: shared locks held */
 	u_short		l_exlocks;	/* !: lockdebug: excl. locks held */
-	u_short		l_unused;	/* !: unused */
+	u_short		l_psrefs;	/* !: count of psref held */
 	u_short		l_blcnt;	/* !: count of kernel_lock held */
 	int		l_nopreempt;	/* !: don't preempt me! */
 	u_int		l_dopreempt;	/* s: kernel preemption pending */
@@ -255,7 +257,6 @@ extern int		maxlwp __read_mostly;	/* max number of lwps */
 #define	LP_INTR		0x00000040 /* Soft interrupt handler */
 #define	LP_SYSCTLWRITE	0x00000080 /* sysctl write lock held */
 #define	LP_MUSTJOIN	0x00000100 /* Must join kthread on exit */
-#define	LP_VFORKWAIT	0x00000200 /* Waiting at vfork() for a child */
 #define	LP_SINGLESTEP	0x00000400 /* Single step thread in ptrace(2) */
 #define	LP_TIMEINTR	0x00010000 /* Time this soft interrupt */
 #define	LP_PREEMPTING	0x00020000 /* mi_switch called involuntarily */
@@ -280,14 +281,15 @@ extern int		maxlwp __read_mostly;	/* max number of lwps */
  * runnable but *not* yet running, i.e. is on a run queue.  LSONPROC
  * indicates that the process is actually executing on a CPU, i.e.
  * it is no longer on a run queue.
+ *
+ * These values are set in stone and must not be reused with future changes.
  */
 #define	LSIDL		1	/* Process being created by fork. */
 #define	LSRUN		2	/* Currently runnable. */
 #define	LSSLEEP		3	/* Sleeping on an address. */
 #define	LSSTOP		4	/* Process debugging or suspension. */
 #define	LSZOMB		5	/* Awaiting collection by parent. */
-/* unused, for source compatibility with NetBSD 4.0 and earlier. */
-#define	LSDEAD		6	/* Process is almost a zombie. */
+/* define	LSDEAD	6	Process is almost a zombie. (removed in 5.0) */
 #define	LSONPROC	7	/* Process is currently on a CPU. */
 #define	LSSUSPENDED	8	/* Not running, not signalable. */
 
@@ -356,6 +358,7 @@ void	*lwp_getspecific(specificdata_key_t);
 void	*_lwp_getspecific_by_lwp(lwp_t *, specificdata_key_t);
 #endif
 void	lwp_setspecific(specificdata_key_t, void *);
+void	lwp_setspecific_by_lwp(lwp_t *, specificdata_key_t, void *);
 
 /* Syscalls. */
 int	lwp_park(clockid_t, int, struct timespec *, const void *);

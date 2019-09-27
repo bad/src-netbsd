@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32.h,v 1.120 2018/11/25 17:58:29 mlelstv Exp $	*/
+/*	$NetBSD: netbsd32.h,v 1.126 2019/09/26 01:30:46 christos Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001, 2008, 2015 Matthew R. Green
@@ -46,6 +46,8 @@
 #include <sys/shm.h>
 #include <sys/ucontext.h>
 #include <sys/ucred.h>
+#include <sys/module_hook.h>
+
 #include <compat/sys/ucontext.h>
 #include <compat/sys/mount.h>
 #include <compat/sys/signal.h>
@@ -74,10 +76,16 @@ typedef uint32_t netbsd32_uintptr_t;
 
 /*
  * machine dependant section; must define:
- *	netbsd32_pointer_t
+ *	NETBSD32_POINTER_TYPE
  *		- 32-bit pointer type, normally uint32_t but can be int32_t
  *		  for platforms which rely on sign-extension of pointers
  *		  such as SH-5.
+ *                eg:	#define NETBSD32_POINTER_TYPE uint32_t
+ *	netbsd32_pointer_t
+ *		- a typedef'd struct with the above as an "i32" member.
+ *                eg:	typedef struct {
+ *				NETBSD32_POINTER_TYPE i32;
+ *			} netbsd32_pointer_t;
  *	NETBSD32PTR64(p32)
  *		- Translate a 32-bit pointer into something valid in a
  *		  64-bit context.
@@ -98,11 +106,6 @@ typedef uint32_t netbsd32_uintptr_t;
  */
 #include <machine/netbsd32_machdep.h>
 
-/* netbsd32_machdep.h will have (typically) defined:
-#define NETBSD32_POINTER_TYPE uint32_t
-typedef	struct { NETBSD32_POINTER_TYPE i32; } netbsd32_pointer_t;
-*/
-
 /*
  * Conversion functions for the rest of the compat32 code:
  *
@@ -117,12 +120,35 @@ typedef	struct { NETBSD32_POINTER_TYPE i32; } netbsd32_pointer_t;
  */
 #define	NETBSD32PTR64(p32)		NETBSD32IPTR64((p32).i32)
 #define	NETBSD32PTR32(p32, p64)		((p32).i32 = NETBSD32PTR32I(p64))
-#define	NETBSD32PTR32PLUS(p32, incr)	((p32).i32 += incr)
+#define	NETBSD32PTR32PLUS(p32, incr)	netbsd32_ptr32_incr(&p32, incr)
+#define	NETBSD32PTR32I(p32)		netbsd32_ptr32i(p32)
+#define	NETBSD32IPTR64(p32)		netbsd32_iptr64(p32)
 
 static __inline NETBSD32_POINTER_TYPE
-NETBSD32PTR32I(const void *p64) { return (uintptr_t)p64; }
+netbsd32_ptr32i(const void *p64)
+{
+	uintptr_t u64 = (uintptr_t)p64;
+	KASSERTMSG(u64 == (uintptr_t)(NETBSD32_POINTER_TYPE)u64,
+	    "u64 %jx != %jx", (uintmax_t)u64,
+	   (uintmax_t)(NETBSD32_POINTER_TYPE)u64);
+	return u64;
+}
+
 static __inline void *
-NETBSD32IPTR64(NETBSD32_POINTER_TYPE p32) { return (void *)(intptr_t)p32; }
+netbsd32_iptr64(NETBSD32_POINTER_TYPE p32)
+{
+	return (void *)(intptr_t)p32;
+}
+
+static __inline netbsd32_pointer_t
+netbsd32_ptr32_incr(netbsd32_pointer_t *p32, uint32_t incr)
+{
+	netbsd32_pointer_t n32 = *p32;
+
+	n32.i32 += incr;
+	KASSERT(NETBSD32PTR64(n32) > NETBSD32PTR64(*p32));
+	return *p32 = n32;
+}
 
 /* Nothing should be using the raw type, so kill it */
 #undef NETBSD32_POINTER_TYPE
@@ -712,7 +738,7 @@ struct netbsd32_omsghdr {
 	netbsd32_iovecp_t msg_iov;		/* scatter/gather array */
 	int		 msg_iovlen;		/* # elements in msg_iov */
 	netbsd32_caddr_t msg_accrights;		/* access rights sent/recvd */
-	int		 msg_accrightslen;
+	u_int		 msg_accrightslen;
 };
 
 typedef netbsd32_pointer_t netbsd32_mmsghdrp_t;
@@ -826,8 +852,8 @@ struct netbsd32_stat {
 };
 
 /* from <sys/statvfs.h> */
-typedef netbsd32_pointer_t netbsd32_statvfsp_t;
-struct netbsd32_statvfs {
+typedef netbsd32_pointer_t netbsd32_statvfs90p_t;
+struct netbsd32_statvfs90 {
 	netbsd32_u_long	f_flag;		/* copy of mount exported flags */
 	netbsd32_u_long	f_bsize;	/* system block size */
 	netbsd32_u_long	f_frsize;	/* system fragment size */
@@ -852,6 +878,35 @@ struct netbsd32_statvfs {
 	char	f_fstypename[_VFS_NAMELEN]; /* fs type name */
 	char	f_mntonname[_VFS_MNAMELEN];  /* directory on which mounted */
 	char	f_mntfromname[_VFS_MNAMELEN];  /* mounted file system */
+};
+
+typedef netbsd32_pointer_t netbsd32_statvfsp_t;
+struct netbsd32_statvfs {
+	netbsd32_u_long	f_flag;		/* copy of mount exported flags */
+	netbsd32_u_long	f_bsize;	/* system block size */
+	netbsd32_u_long	f_frsize;	/* system fragment size */
+	netbsd32_u_long	f_iosize;	/* optimal file system block size */
+	netbsd32_uint64	f_blocks;	/* number of blocks in file system */
+	netbsd32_uint64	f_bfree;	/* free blocks avail in file system */
+	netbsd32_uint64	f_bavail;	/* free blocks avail to non-root */
+	netbsd32_uint64	f_bresvd;	/* blocks reserved for root */
+	netbsd32_uint64	f_files;	/* total file nodes in file system */
+	netbsd32_uint64	f_ffree;	/* free file nodes in file system */
+	netbsd32_uint64	f_favail;	/* free file nodes avail to non-root */
+	netbsd32_uint64	f_fresvd;	/* file nodes reserved for root */
+	netbsd32_uint64	f_syncreads;	/* count of sync reads since mount */
+	netbsd32_uint64	f_syncwrites;	/* count of sync writes since mount */
+	netbsd32_uint64	f_asyncreads;	/* count of async reads since mount */
+	netbsd32_uint64	f_asyncwrites;	/* count of async writes since mount */
+	fsid_t		f_fsidx;	/* NetBSD compatible fsid */
+	netbsd32_u_long	f_fsid;		/* Posix compatible fsid */
+	netbsd32_u_long	f_namemax;	/* maximum filename length */
+	uid_t		f_owner;	/* user that mounted the file system */
+	uint64_t	f_spare[4];	/* spare space */
+	char	f_fstypename[_VFS_NAMELEN]; /* fs type name */
+	char	f_mntonname[_VFS_MNAMELEN];  /* directory on which mounted */
+	char	f_mntfromname[_VFS_MNAMELEN];  /* mounted file system */
+	char	f_mntfromlabel[_VFS_MNAMELEN];  /* disk label name if available */
 };
 
 /* from <sys/timex.h> */
@@ -1171,4 +1226,38 @@ struct iovec *netbsd32_get_iov(struct netbsd32_iovec *, int, struct iovec *,
 #ifdef SYSCTL_SETUP_PROTO
 SYSCTL_SETUP_PROTO(netbsd32_sysctl_emul_setup);
 #endif /* SYSCTL_SETUP_PROTO */
+
+MODULE_HOOK(netbsd32_sendsig_hook, void,
+    (const ksiginfo_t *, const sigset_t *));
+
+extern struct sysent netbsd32_sysent[];
+extern const uint32_t netbsd32_sysent_nomodbits[]; 
+#ifdef SYSCALL_DEBUG 
+extern const char * const netbsd32_syscallnames[];
+#endif
+
+extern struct sysctlnode netbsd32_sysctl_root;
+
+struct netbsd32_modctl_args;
+MODULE_HOOK(compat32_80_modctl_hook, int,
+    (struct lwp *, const struct netbsd32_modctl_args *, register_t *));
+
+/*
+ * Finally, declare emul_netbsd32 as this is needed in lots of
+ * places when calling syscall_{,dis}establish()
+ */
+
+extern struct emul emul_netbsd32;
+extern char netbsd32_sigcode[], netbsd32_esigcode[];
+
+/*
+ * Prototypes for MD initialization routines
+ */
+void netbsd32_machdep_md_init(void);
+void netbsd32_machdep_md_fini(void);
+void netbsd32_machdep_md_13_init(void);
+void netbsd32_machdep_md_13_fini(void);
+void netbsd32_machdep_md_16_init(void);
+void netbsd32_machdep_md_16_fini(void);
+
 #endif /* _COMPAT_NETBSD32_NETBSD32_H_ */

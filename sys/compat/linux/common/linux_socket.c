@@ -1,4 +1,4 @@
-/*	$NetBSD: linux_socket.c,v 1.143 2018/11/14 17:51:37 hannken Exp $	*/
+/*	$NetBSD: linux_socket.c,v 1.149 2019/09/08 18:46:32 maxv Exp $	*/
 
 /*-
  * Copyright (c) 1995, 1998, 2008 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: linux_socket.c,v 1.143 2018/11/14 17:51:37 hannken Exp $");
+__KERNEL_RCSID(0, "$NetBSD: linux_socket.c,v 1.149 2019/09/08 18:46:32 maxv Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_inet.h"
@@ -546,6 +546,8 @@ linux_sys_sendmsg(struct lwp *l, const struct linux_sys_sendmsg_args *uap, regis
 
 				case LINUX_SCM_CREDENTIALS:
 					/* no native equivalent, just drop it */
+					if (control != mtod(ctl_mbuf, void *))
+						free(control, M_MBUF);
 					m_free(ctl_mbuf);
 					ctl_mbuf = NULL;
 					msg.msg_control = NULL;
@@ -568,14 +570,15 @@ linux_sys_sendmsg(struct lwp *l, const struct linux_sys_sendmsg_args *uap, regis
 			/* Check the buffer is big enough */
 			if (__predict_false(cidx + cspace > clen)) {
 				u_int8_t *nc;
+				size_t nclen;
 
-				clen = cidx + cspace;
-				if (clen >= PAGE_SIZE) {
+				nclen = cidx + cspace;
+				if (nclen >= PAGE_SIZE) {
 					error = EINVAL;
 					goto done;
 				}
 				nc = realloc(clen <= MLEN ? NULL : control,
-						clen, M_TEMP, M_WAITOK);
+						nclen, M_TEMP, M_WAITOK);
 				if (!nc) {
 					error = ENOMEM;
 					goto done;
@@ -584,6 +587,7 @@ linux_sys_sendmsg(struct lwp *l, const struct linux_sys_sendmsg_args *uap, regis
 					/* Old buffer was in mbuf... */
 					memcpy(nc, control, cidx);
 				control = nc;
+				clen = nclen;
 			}
 
 			/* Copy header */
@@ -605,7 +609,7 @@ linux_sys_sendmsg(struct lwp *l, const struct linux_sys_sendmsg_args *uap, regis
 
 			resid -= LINUX_CMSG_ALIGN(l_cmsg.cmsg_len);
 			cidx += cspace;
-		} while ((l_cc = LINUX_CMSG_NXTHDR(&msg, l_cc)) && resid > 0);
+		} while ((l_cc = LINUX_CMSG_NXTHDR(&msg, l_cc, &l_cmsg)) && resid > 0);
 
 		/* If we allocated a buffer, attach to mbuf */
 		if (cidx > MLEN) {
@@ -1136,6 +1140,7 @@ linux_getifconf(struct lwp *l, register_t *retval, void *data)
 	if (error)
 		return error;
 
+	memset(&ifr, 0, sizeof(ifr));
 	docopy = ifc.ifc_req != NULL;
 	if (docopy) {
 		space = ifc.ifc_len;
@@ -1604,9 +1609,6 @@ linux_get_sa(struct lwp *l, int s, struct sockaddr_big *sb,
 		sin6->sin6_scope_id = 0;
 	}
 
-	if (bdom == AF_INET)
-		namelen = sizeof(struct sockaddr_in);
-
 	sb->sb_family = bdom;
 	sb->sb_len = namelen;
 	ktrkuser("mbsoname", sb, namelen);
@@ -1829,7 +1831,7 @@ linux_sys_recvmmsg(struct lwp *l, const struct linux_sys_recvmmsg_args *uap,
 	struct msghdr *msg = &bmsg.msg_hdr;
 	int error, s;
 	struct mbuf *from, *control;
-	struct timespec ts, now;
+	struct timespec ts = {0}, now;
 	struct linux_timespec lts;
 	unsigned int vlen, flags, dg;
 

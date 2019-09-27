@@ -1,4 +1,4 @@
-/*	$NetBSD: nd6_nbr.c,v 1.164 2018/12/22 14:28:57 maxv Exp $	*/
+/*	$NetBSD: nd6_nbr.c,v 1.174 2019/09/25 09:52:32 ozaki-r Exp $	*/
 /*	$KAME: nd6_nbr.c,v 1.61 2001/02/10 16:06:14 jinmei Exp $	*/
 
 /*
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: nd6_nbr.c,v 1.164 2018/12/22 14:28:57 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: nd6_nbr.c,v 1.174 2019/09/25 09:52:32 ozaki-r Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -82,8 +82,10 @@ static void nd6_dad_starttimer(struct dadq *, int);
 static void nd6_dad_destroytimer(struct dadq *);
 static void nd6_dad_timer(struct dadq *);
 static void nd6_dad_ns_output(struct dadq *, struct ifaddr *);
-static void nd6_dad_input(struct ifaddr *, struct nd_opt_nonce *);
-static void nd6_dad_duplicated(struct ifaddr *, struct dadq *);
+static void nd6_dad_input(struct ifaddr *, struct nd_opt_nonce *,
+    const struct sockaddr_dl *);
+static void nd6_dad_duplicated(struct ifaddr *, struct dadq *,
+    const struct sockaddr_dl *);
 
 static int dad_maxtry = 15;	/* max # of *tries* to transmit DAD packet */
 
@@ -305,8 +307,17 @@ nd6_ns_input(struct mbuf *m, int off, int icmp6len)
 		 * If not, the packet is for addess resolution;
 		 * silently ignore it.
 		 */
-		if (IN6_IS_ADDR_UNSPECIFIED(&saddr6))
-			nd6_dad_input(ifa, ndopts.nd_opts_nonce);
+		if (IN6_IS_ADDR_UNSPECIFIED(&saddr6)) {
+			struct sockaddr_dl sdl, *sdlp;
+
+			if (lladdr != NULL)
+				sdlp = sockaddr_dl_init(&sdl, sizeof(sdl),
+				    ifp->if_index, ifp->if_type,
+				    NULL, 0, lladdr, lladdrlen);
+			else
+				sdlp = NULL;
+			nd6_dad_input(ifa, ndopts.nd_opts_nonce, sdlp);
+		}
 		goto freeit;
 	}
 
@@ -483,7 +494,6 @@ nd6_ns_output(struct ifnet *ifp, const struct in6_addr *daddr6,
 				    "determined: dst=%s, error=%d\n",
 				    IN6_PRINT(ip6buf, &dst_sa.sin6_addr),
 				    error);
-				pserialize_read_exit(s);
 				goto bad;
 			}
 			src = &src_in;
@@ -594,13 +604,13 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	int is_router;
 	int is_solicited;
 	int is_override;
+	int rt_cmd;
 	char *lladdr = NULL;
 	int lladdrlen = 0;
 	struct ifaddr *ifa;
 	struct llentry *ln = NULL;
 	union nd_opts ndopts;
 	struct sockaddr_in6 ssin6;
-	int rt_announce;
 	bool checklink = false;
 	struct psref psref;
 	struct psref psref_ia;
@@ -687,9 +697,17 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	 * Otherwise, process as defined in RFC 2461.
 	 */
 	if (ifa) {
-		if (((struct in6_ifaddr *)ifa)->ia6_flags & IN6_IFF_TENTATIVE)
-			nd6_dad_input(ifa, NULL);
-		else
+		if (((struct in6_ifaddr *)ifa)->ia6_flags & IN6_IFF_TENTATIVE) {
+			struct sockaddr_dl sdl, *sdlp;
+
+			if (lladdr != NULL)
+				sdlp = sockaddr_dl_init(&sdl, sizeof(sdl),
+				    ifp->if_index, ifp->if_type,
+				    NULL, 0, lladdr, lladdrlen);
+			else
+				sdlp = NULL;
+			nd6_dad_input(ifa, NULL, sdlp);
+		} else
 			log(LOG_ERR,
 			    "nd6_na_input: duplicate IP6 address %s\n",
 			    IN6_PRINT(ip6buf, &taddr6));
@@ -716,7 +734,7 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	if (ln == NULL)
 		goto freeit;
 
-	rt_announce = 0;
+	rt_cmd = 0;
 	if (ln->ln_state == ND6_LLINFO_INCOMPLETE) {
 		/*
 		 * If the link-layer has address, and no lladdr option came,
@@ -730,7 +748,7 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 		 */
 		memcpy(&ln->ll_addr, lladdr, ifp->if_addrlen);
 		ln->la_flags |= LLE_VALID;
-		rt_announce = 1;
+		rt_cmd = RTM_ADD;
 		if (is_solicited) {
 			ln->ln_state = ND6_LLINFO_REACHABLE;
 			ln->ln_byhint = 0;
@@ -751,22 +769,24 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 			checklink = true;
 		}
 	} else {
-		int llchange;
+		bool llchange;
 
 		/*
 		 * Check if the link-layer address has changed or not.
 		 */
 		if (lladdr == NULL)
-			llchange = 0;
+			llchange = false;
 		else {
 			if (ln->la_flags & LLE_VALID) {
 				if (memcmp(lladdr, &ln->ll_addr, ifp->if_addrlen))
-					llchange = rt_announce = 1;
+					llchange = true;
 				else
-					llchange = 0;
+					llchange = false;
 			} else
-				llchange = rt_announce = 1;
+				llchange = true;
 		}
+		if (llchange)
+			rt_cmd = RTM_CHANGE;
 
 		/*
 		 * This is VERY complex.  Look at it with care.
@@ -835,10 +855,8 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 			 * Remove the sender from the Default Router List and
 			 * update the Destination Cache entries.
 			 */
+			const struct in6_addr *in6 = &ln->r_l3addr.addr6;
 			struct nd_defrouter *dr;
-			const struct in6_addr *in6;
-
-			in6 = &ln->r_l3addr.addr6;
 
 			ND6_WLOCK();
 			dr = nd6_defrouter_lookup(in6, ln->lle_tbl->llt_ifp);
@@ -864,11 +882,14 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	 */
 	ln->ln_asked = 0;
 	nd6_llinfo_release_pkts(ln, ifp);
-	/* FIXME */
-#if 0
-	if (rt_announce) /* tell user process about any new lladdr */
-		rt_newmsg(RTM_CHANGE, rt);
-#endif
+
+	if (rt_cmd != 0) {
+		struct sockaddr_in6 sin6;
+
+		sockaddr_in6_init(&sin6, &ln->r_l3addr.addr6, 0, 0, 0);
+		rt_clonedmsg(rt_cmd, sin6tosa(&sin6),
+		    (char *)&ln->ll_addr, ln->lle_tbl->llt_ifp);
+	}
 
  freeit:
 	if (ln != NULL)
@@ -1103,8 +1124,15 @@ struct dadq {
 };
 
 static struct dadq_head dadq;
-static int dad_init = 0;
 static kmutex_t nd6_dad_lock;
+
+void
+nd6_nbr_init(void)
+{
+
+	TAILQ_INIT(&dadq);
+	mutex_init(&nd6_dad_lock, MUTEX_DEFAULT, IPL_NONE);
+}
 
 static struct dadq *
 nd6_dad_find(struct ifaddr *ifa, struct nd_opt_nonce *nonce, bool *found_nonce)
@@ -1217,12 +1245,6 @@ nd6_dad_start(struct ifaddr *ifa, int xtick)
 	struct dadq *dp;
 	char ip6buf[INET6_ADDRSTRLEN];
 
-	if (!dad_init) {
-		TAILQ_INIT(&dadq);
-		mutex_init(&nd6_dad_lock, MUTEX_DEFAULT, IPL_NONE);
-		dad_init++;
-	}
-
 	/*
 	 * If we don't need DAD, don't do it.
 	 * There are several cases:
@@ -1239,7 +1261,7 @@ nd6_dad_start(struct ifaddr *ifa, int xtick)
 	}
 	if (ia->ia6_flags & IN6_IFF_ANYCAST || !ip6_dad_enabled()) {
 		ia->ia6_flags &= ~IN6_IFF_TENTATIVE;
-		rt_newaddrmsg(RTM_NEWADDR, ifa, 0, NULL);
+		rt_addrmsg(RTM_NEWADDR, ifa);
 		return;
 	}
 	KASSERT(ifa->ifa_ifp != NULL);
@@ -1299,9 +1321,6 @@ void
 nd6_dad_stop(struct ifaddr *ifa)
 {
 	struct dadq *dp;
-
-	if (!dad_init)
-		return;
 
 	mutex_enter(&nd6_dad_lock);
 	dp = nd6_dad_find(ifa, NULL, NULL);
@@ -1377,7 +1396,7 @@ nd6_dad_timer(struct dadq *dp)
 		 * No duplicate address found.
 		 */
 		ia->ia6_flags &= ~IN6_IFF_TENTATIVE;
-		rt_newaddrmsg(RTM_NEWADDR, ifa, 0, NULL);
+		rt_addrmsg(RTM_NEWADDR, ifa);
 
 		nd6log(LOG_DEBUG,
 		    "%s: DAD complete for %s - no duplicates found\n",
@@ -1400,34 +1419,33 @@ done:
 }
 
 static void
-nd6_dad_duplicated(struct ifaddr *ifa, struct dadq *dp)
+nd6_dad_duplicated(struct ifaddr *ifa, struct dadq *dp,
+    const struct sockaddr_dl *from)
 {
 	struct in6_ifaddr *ia;
 	struct ifnet *ifp;
-	char ip6buf[INET6_ADDRSTRLEN];
+	char ip6buf[INET6_ADDRSTRLEN], llabuf[LLA_ADDRSTRLEN], *llastr;
 
 	KASSERT(mutex_owned(&nd6_dad_lock));
 	KASSERT(ifa != NULL);
 
 	ifp = ifa->ifa_ifp;
 	ia = (struct in6_ifaddr *)ifa;
-#if 0
-	log(LOG_ERR, "%s: DAD detected duplicate IPv6 address %s: "
-	    "NS in/out/loopback=%d/%d\n",
-	    if_name(ifp), IN6_PRINT(ip6buf, &ia->ia_addr.sin6_addr),
-	    dp->dad_ns_ocount, dp->dad_ns_lcount)
-#endif
 
 	ia->ia6_flags &= ~IN6_IFF_TENTATIVE;
 	ia->ia6_flags |= IN6_IFF_DUPLICATED;
 
-	log(LOG_ERR, "%s: DAD complete for %s - duplicate found\n",
-	    if_name(ifp), IN6_PRINT(ip6buf, &ia->ia_addr.sin6_addr));
-	log(LOG_ERR, "%s: manual intervention required\n",
-	    if_name(ifp));
+	if (__predict_false(from == NULL))
+		llastr = NULL;
+	else
+		llastr = lla_snprintf(llabuf, sizeof(llabuf),
+		    CLLADDR(from), from->sdl_alen);
+
+	log(LOG_ERR, "%s: DAD duplicate address %s from %s\n",
+	    if_name(ifp), IN6_PRINT(ip6buf, &ia->ia_addr.sin6_addr), llastr);
 
 	/* Inform the routing socket that DAD has completed */
-	rt_newaddrmsg(RTM_NEWADDR, ifa, 0, NULL);
+	rt_addrmsg_src(RTM_NEWADDR, ifa, (const struct sockaddr *)from);
 
 	/*
 	 * If the address is a link-local address formed from an interface
@@ -1492,7 +1510,8 @@ nd6_dad_ns_output(struct dadq *dp, struct ifaddr *ifa)
 }
 
 static void
-nd6_dad_input(struct ifaddr *ifa, struct nd_opt_nonce *nonce)
+nd6_dad_input(struct ifaddr *ifa, struct nd_opt_nonce *nonce,
+    const struct sockaddr_dl *from)
 {
 	struct dadq *dp;
 	bool found_nonce = false;
@@ -1502,7 +1521,7 @@ nd6_dad_input(struct ifaddr *ifa, struct nd_opt_nonce *nonce)
 	mutex_enter(&nd6_dad_lock);
 	dp = nd6_dad_find(ifa, nonce, &found_nonce);
 	if (!found_nonce) {
-		nd6_dad_duplicated(ifa, dp);
+		nd6_dad_duplicated(ifa, dp, from);
 		if (dp != NULL)
 			nd6_dad_stoptimer(dp);
 	}

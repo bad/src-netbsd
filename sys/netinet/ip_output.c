@@ -1,4 +1,4 @@
-/*	$NetBSD: ip_output.c,v 1.309 2018/12/22 13:11:38 maxv Exp $	*/
+/*	$NetBSD: ip_output.c,v 1.314 2019/06/05 01:31:04 knakahara Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
@@ -91,7 +91,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ip_output.c,v 1.309 2018/12/22 13:11:38 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ip_output.c,v 1.314 2019/06/05 01:31:04 knakahara Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -616,16 +616,19 @@ sendit:
 		if (error || ipsec_done)
 			goto done;
 	}
-#endif
 
-	/*
-	 * Run through list of hooks for output packets.
-	 */
-	error = pfil_run_hooks(inet_pfil_hook, &m, ifp, PFIL_OUT);
-	if (error)
-		goto done;
-	if (m == NULL)
-		goto done;
+	if (!ipsec_used || !natt_frag)
+#endif
+	{
+		/*
+		 * Run through list of hooks for output packets.
+		 */
+		error = pfil_run_hooks(inet_pfil_hook, &m, ifp, PFIL_OUT);
+		if (error || m == NULL) {
+			IP_STATINC(IP_STAT_PFILDROP_OUT);
+			goto done;
+		}
+	}
 
 	ip = mtod(m, struct ip *);
 	hlen = ip->ip_hl << 2;
@@ -777,7 +780,7 @@ sendit:
 		 * processing can occur.
 		 */
 		if (natt_frag) {
-			error = ip_output(m, opt, ro,
+			error = ip_output(m, opt, NULL,
 			    flags | IP_RAWOUTPUT | IP_NOIPNEWID,
 			    imo, inp);
 		} else {
@@ -1238,9 +1241,9 @@ ip_ctloutput(int op, struct socket *so, struct sockopt *sopt)
 				error = ipsec_set_policy(inp,
 				    sopt->sopt_data, sopt->sopt_size,
 				    curlwp->l_cred);
-				break;
-			}
-			/*FALLTHROUGH*/
+			} else 
+				error = ENOPROTOOPT;
+			break;
 #endif /* IPSEC */
 
 		default:
@@ -1837,9 +1840,7 @@ ip_add_membership(struct ip_moptions *imo, const struct sockopt *sopt)
 	 * Everything looks good; add a new record to the multicast
 	 * address list for the given interface.
 	 */
-	IFNET_LOCK(ifp);
 	imo->imo_membership[i] = in_addmulti(&ia, ifp);
-	IFNET_UNLOCK(ifp);
 	if (imo->imo_membership[i] == NULL) {
 		error = ENOBUFS;
 		goto out;
@@ -1899,10 +1900,7 @@ ip_drop_membership(struct ip_moptions *imo, const struct sockopt *sopt)
 	 * Give up the multicast address record to which the
 	 * membership points.
 	 */
-	struct ifnet *inm_ifp = imo->imo_membership[i]->inm_ifp;
-	IFNET_LOCK(inm_ifp);
 	in_delmulti(imo->imo_membership[i]);
-	IFNET_UNLOCK(inm_ifp);
 
 	/*
 	 * Remove the gap in the membership array.
@@ -2097,11 +2095,8 @@ ip_freemoptions(struct ip_moptions *imo)
 	if (imo != NULL) {
 		for (i = 0; i < imo->imo_num_memberships; ++i) {
 			struct in_multi *inm = imo->imo_membership[i];
-			struct ifnet *ifp = inm->inm_ifp;
-			IFNET_LOCK(ifp);
 			in_delmulti(inm);
 			/* ifp should not leave thanks to solock */
-			IFNET_UNLOCK(ifp);
 		}
 
 		kmem_intr_free(imo, sizeof(*imo));

@@ -1,4 +1,4 @@
-/*	$NetBSD: uhub.c,v 1.141 2018/10/23 01:49:37 manu Exp $	*/
+/*	$NetBSD: uhub.c,v 1.143 2019/08/21 10:48:37 mrg Exp $	*/
 /*	$FreeBSD: src/sys/dev/usb/uhub.c,v 1.18 1999/11/17 22:33:43 n_hibma Exp $	*/
 /*	$OpenBSD: uhub.c,v 1.86 2015/06/29 18:27:40 mpi Exp $ */
 
@@ -37,7 +37,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uhub.c,v 1.141 2018/10/23 01:49:37 manu Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uhub.c,v 1.143 2019/08/21 10:48:37 mrg Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -98,8 +98,10 @@ fail:
 
 #define DPRINTF(FMT,A,B,C,D)	USBHIST_LOGN(uhubdebug,1,FMT,A,B,C,D)
 #define DPRINTFN(N,FMT,A,B,C,D)	USBHIST_LOGN(uhubdebug,N,FMT,A,B,C,D)
-#define UHUBHIST_FUNC() USBHIST_FUNC()
-#define UHUBHIST_CALLED(name) USBHIST_CALLED(uhubdebug)
+#define UHUBHIST_FUNC()		USBHIST_FUNC()
+#define UHUBHIST_CALLED(name)	USBHIST_CALLED(uhubdebug)
+#define UHUBHIST_CALLARGS(FMT,A,B,C,D) \
+				USBHIST_CALLARGS(uhubdebug,FMT,A,B,C,D)
 
 struct uhub_softc {
 	device_t		 sc_dev;	/* base device */
@@ -140,7 +142,7 @@ void uhub_attach(device_t, device_t, void *);
 int uhub_rescan(device_t, const char *, const int *);
 void uhub_childdet(device_t, device_t);
 int uhub_detach(device_t, int);
-extern struct cfdriver uhub_cd;
+
 CFATTACH_DECL3_NEW(uhub, sizeof(struct uhub_softc), uhub_match,
     uhub_attach, uhub_detach, NULL, uhub_rescan, uhub_childdet,
     DVF_DETACH_SHUTDOWN);
@@ -486,9 +488,8 @@ uhub_explore(struct usbd_device *dev)
 	int port;
 	int change, status, reconnect;
 
-	UHUBHIST_FUNC(); UHUBHIST_CALLED();
-
-	DPRINTFN(10, "uhub%jd dev=%#jx addr=%jd speed=%ju",
+	UHUBHIST_FUNC();
+	UHUBHIST_CALLARGS("uhub%jd dev=%#jx addr=%jd speed=%ju",
 	    device_unit(sc->sc_dev), (uintptr_t)dev, dev->ud_addr,
 	    dev->ud_speed);
 
@@ -759,8 +760,8 @@ uhub_explore(struct usbd_device *dev)
 			  dev->ud_depth + 1, speed, port, up);
 		/* XXX retry a few times? */
 		if (err) {
-			DPRINTF("usbd_new_device failed, error %jd", err, 0, 0,
-			    0);
+			DPRINTF("uhub%jd: usbd_new_device failed, error %jd",
+			    device_unit(sc->sc_dev), err, 0, 0);
 			/* Avoid addressing problems by disabling. */
 			/* usbd_reset_port(dev, port, &up->status); */
 
@@ -927,9 +928,8 @@ uhub_intr(struct usbd_xfer *xfer, void *addr, usbd_status status)
 {
 	struct uhub_softc *sc = addr;
 
-	UHUBHIST_FUNC(); UHUBHIST_CALLED();
-
-	DPRINTFN(5, "uhub%jd", device_unit(sc->sc_dev), 0, 0, 0);
+	UHUBHIST_FUNC(); UHUBHIST_CALLARGS("called! uhub%jd status=%jx",
+	    device_unit(sc->sc_dev), status, 0, 0);
 
 	if (status == USBD_STALLED)
 		usbd_clear_endpoint_stall_async(sc->sc_ipipe);

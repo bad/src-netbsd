@@ -1,4 +1,4 @@
-/*	$NetBSD: procfs_machdep.c,v 1.27 2019/01/06 15:37:17 christos Exp $ */
+/*	$NetBSD: procfs_machdep.c,v 1.33 2019/07/24 04:58:26 msaitoh Exp $ */
 
 /*
  * Copyright (c) 2001 Wasabi Systems, Inc.
@@ -42,7 +42,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: procfs_machdep.c,v 1.27 2019/01/06 15:37:17 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: procfs_machdep.c,v 1.33 2019/07/24 04:58:26 msaitoh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -115,21 +115,21 @@ static const char * const x86_features[][32] = {
 	"hw_pstate", "proc_feedback", "sme", NULL,
 	NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
+	NULL, "ibrs", "ibpb", "stibp", NULL, NULL, NULL, NULL},
 
 	{ /* (8) Linux mapping */
 	"tpr_shadow", "vnmi", "flexpriority", "ept",
 	"vpid", "npt", "lbrv", "svm_lock",
 	"nrip_save", "tsc_scale", "vmcb_clean", "flushbyasid",
 	"decodeassists", "pausefilter", "pfthreshold", "vmmcall",
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+	NULL, "ept_ad", NULL, NULL, NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 
 	{ /* (9) Intel-defined: 00000007 ebx */
 	"fsgsbase", "tsc_adjust", NULL, "bmi1", "hle", "avx2", NULL, "smep",
 	"bmi2", "erms", "invpcid", "rtm", "cqm", NULL, "mpx", "rdt_a",
 	"avx512f", "avx512dq", "rdseed", "adx",
-	"smap", NULL, NULL, "clflushopt",
+	"smap", "avx512ifma", NULL, "clflushopt",
 	"clwb", "intel_pt", "avx512pf", "avx512er",
 	"avx512cd", "sha_ni", "avx512bw", "avx512vl"},
 
@@ -146,16 +146,17 @@ static const char * const x86_features[][32] = {
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 
 	{ /* (12) 0x0000000f:1 edx */
-	"cqm_occup_llc", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+	"cqm_occup_llc", "cqm_mbm_total", "cqm_mbm_local", NULL,
+	NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 
 	{ /* (13) AMD 0x80000008 ebx */
 	"clzero", "irperf", "xsaveerptr", NULL, NULL, NULL, NULL, NULL,
-	NULL, NULL, NULL, NULL, "ibpb", NULL, "ibrs", "stibp",
+	NULL, "wbnoinvd", NULL, NULL, NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
+	NULL, "virt_ssbd", NULL, NULL, NULL, NULL, NULL, NULL},
 
 	{ /* (14) 0x00000006 eax */
 	"dtherm", "ida", "arat", NULL, "pln", NULL, "pts", "hwp",
@@ -174,11 +175,11 @@ static const char * const x86_features[][32] = {
 
 	{ /* (16) 0x00000007:0 ecx */
 	NULL, "avx512vbmi", "umip", "pku",
-	"ospke", NULL, "avx512_vbmi2", NULL,
+	"ospke", "waitpkg", "avx512_vbmi2", NULL,
 	"gfni", "vaes", "vpclmulqdq", "avx512_vnni",
-	"avx512_bitalg", NULL, "avx512_vpopcntdq", NULL,
+	"avx512_bitalg", "tme", "avx512_vpopcntdq", NULL,
 	"la57", NULL, NULL, NULL, NULL, NULL, "rdpid", NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
+	NULL, "cldemote", NULL, "movdiri", "movdir64b", NULL, NULL, NULL},
 
 	{ /* (17) 0x80000007 ebx */
 	"overflow_recov", "succor", NULL, "smca", NULL, NULL, NULL, NULL,
@@ -188,8 +189,8 @@ static const char * const x86_features[][32] = {
 
 	{ /* (18) Intel 0x00000007 edx */
 	NULL, NULL, "avx512_4vnniw", "avx512_4fmaps", NULL, NULL, NULL, NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+	NULL, NULL, "md_clear", NULL, NULL, NULL, NULL, NULL,
+	NULL, NULL, "pconfig", NULL, NULL, NULL, NULL, NULL,
 	NULL, NULL, NULL, NULL,
 	"flush_l1d", "arch_capabilities", NULL, "ssbd"},
 };
@@ -235,7 +236,7 @@ procfs_getonefeatreg(uint32_t reg, const char * const *table, char *p,
 	size_t l;
 
 	for (size_t i = 0; i < 32; i++) {
-		if ((reg & (1 << i)) && table[i]) {
+		if ((reg & (1U << i)) && table[i]) {
 			l = snprintf(p, *left, "%s ", table[i]);
 			if (l < *left) {
 				*left -= l;

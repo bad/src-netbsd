@@ -54,6 +54,7 @@
 #include <sys/kidmap.h>
 
 #ifdef __NetBSD__
+#include <sys/zfs_ctldir.h>
 #include <miscfs/specfs/specdev.h>
 
 extern int (**zfs_vnodeop_p)(void *);
@@ -129,9 +130,6 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 {
 	znode_t *zp = buf;
 
-#ifdef __NetBSD__
-	zp = arg;
-#endif
 	POINTER_INVALIDATE(&zp->z_zfsvfs);
 
 	list_link_init(&zp->z_link_node);
@@ -154,9 +152,6 @@ zfs_znode_cache_destructor(void *buf, void *arg)
 {
 	znode_t *zp = buf;
 
-#ifdef __NetBSD__
-	zp = arg;
-#endif
 	ASSERT(!POINTER_IS_VALID(zp->z_zfsvfs));
 	ASSERT(ZTOV(zp) == NULL);
 #ifndef __NetBSD__
@@ -726,6 +721,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 #ifdef illumos
 			vp->v_rdev = zfs_cmpldev(rdev);
 #else
+			vp->v_op = zfs_specop_p;
 	        	spec_node_init(vp, zfs_cmpldev(rdev));
 #endif
 		}
@@ -733,7 +729,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 #endif
 	case VFIFO:
 #ifdef __NetBSD__
-		/* XXX NetBSD vp->v_op = zfs_fifoop_p; */
+		vp->v_op = zfs_fifoop_p;
 		break;
 #else /* __NetBSD__ */
 #ifdef illumos
@@ -835,7 +831,9 @@ zfs_loadvnode(struct mount *mp, struct vnode *vp,
 	sa_handle_t *hdl;
 	znode_t *zp;
 
-	KASSERT(key_len == sizeof(obj_num));
+	if (key_len != sizeof(obj_num))
+		return zfsctl_loadvnode(mp, vp, key, key_len, new_key);
+
 	memcpy(&obj_num, key, key_len);
 
 	zfsvfs = mp->mnt_data;
@@ -1562,10 +1560,14 @@ zfs_rezget(znode_t *zp)
 
 	zp->z_unlinked = (zp->z_links == 0);
 	zp->z_blksz = doi.doi_data_block_size;
+#ifdef __NetBSD__
+	mutex_enter(vp->v_interlock);
+	(void)VOP_PUTPAGES(vp, 0, 0, PGO_ALLPAGES|PGO_FREE|PGO_SYNCIO);
+#else
 	vn_pages_remove(vp, 0, 0);
+#endif
 	if (zp->z_size != size)
 		vnode_pager_setsize(vp, zp->z_size);
-
 	ZFS_OBJ_HOLD_EXIT(zfsvfs, obj_num);
 
 	return (0);

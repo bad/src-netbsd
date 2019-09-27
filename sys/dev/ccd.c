@@ -1,4 +1,4 @@
-/*	$NetBSD: ccd.c,v 1.176 2018/03/18 20:33:52 christos Exp $	*/
+/*	$NetBSD: ccd.c,v 1.180 2019/08/07 00:38:01 pgoyette Exp $	*/
 
 /*-
  * Copyright (c) 1996, 1997, 1998, 1999, 2007, 2009 The NetBSD Foundation, Inc.
@@ -88,7 +88,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ccd.c,v 1.176 2018/03/18 20:33:52 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ccd.c,v 1.180 2019/08/07 00:38:01 pgoyette Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -115,6 +115,7 @@ __KERNEL_RCSID(0, "$NetBSD: ccd.c,v 1.176 2018/03/18 20:33:52 christos Exp $");
 #include <sys/kthread.h>
 #include <sys/bufq.h>
 #include <sys/sysctl.h>
+#include <sys/compat_stub.h>
 
 #include <uvm/uvm_extern.h>
 
@@ -214,10 +215,6 @@ static	void printiinfo(struct ccdiinfo *);
 
 static LIST_HEAD(, ccd_softc) ccds = LIST_HEAD_INITIALIZER(ccds);
 static kmutex_t ccd_lock;
-
-#ifdef _MODULE
-static struct sysctllog *ccd_clog;
-#endif
 
 SYSCTL_SETUP_PROTO(sysctl_kern_ccd_setup);
 
@@ -1080,7 +1077,7 @@ ccdioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 {
 	int unit = ccdunit(dev);
 	int i, j, lookedup = 0, error = 0;
-	int part, pmask, make;
+	int part, pmask, make, hook;
 	struct ccd_softc *cs;
 	struct ccd_ioctl *ccio = (struct ccd_ioctl *)data;
 	kauth_cred_t uc;
@@ -1096,7 +1093,10 @@ ccdioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 		make = 1;
 		break;
 	default:
-		if ((*compat_ccd_ioctl_60)(0, cmd, NULL, 0, NULL, NULL) == 0)
+		MODULE_HOOK_CALL(ccd_ioctl_60_hook,
+				 (0, cmd, NULL, 0, NULL, NULL),
+				 enosys(), hook);
+		if (hook == 0)
 			make = 1;
 		else
 			make = 0;
@@ -1107,7 +1107,9 @@ ccdioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 		return ENOENT;
 	uc = kauth_cred_get();
 
-	error = (*compat_ccd_ioctl_60)(dev, cmd, data, flag, l, ccdioctl);
+	MODULE_HOOK_CALL(ccd_ioctl_60_hook,
+			 (dev, cmd, data, flag, l, ccdioctl),
+			 enosys(), error);
 	if (error != ENOSYS)
 		return error;
 
@@ -1120,6 +1122,7 @@ ccdioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 	case DIOCCACHESYNC:
 	case DIOCAWEDGE:
 	case DIOCDWEDGE:
+	case DIOCRMWEDGES:
 	case DIOCMWEDGES:
 #ifdef __HAVE_OLD_DISKLABEL
 	case ODIOCSDINFO:
@@ -1674,7 +1677,6 @@ ccd_modcmd(modcmd_t cmd, void *arg)
 
 		error = devsw_attach("ccd", &ccd_bdevsw, &bmajor,
 		    &ccd_cdevsw, &cmajor);
-		sysctl_kern_ccd_setup(&ccd_clog);
 #endif
 		break;
 
@@ -1689,7 +1691,6 @@ ccd_modcmd(modcmd_t cmd, void *arg)
 			error = devsw_detach(&ccd_bdevsw, &ccd_cdevsw);
 			ccddetach();
 		}
-		sysctl_teardown(&ccd_clog);
 #endif
 		break;
 

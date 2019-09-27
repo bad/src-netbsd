@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ipsec.c,v 1.20 2018/12/26 08:55:14 knakahara Exp $  */
+/*	$NetBSD: if_ipsec.c,v 1.24 2019/09/19 06:07:24 knakahara Exp $  */
 
 /*
  * Copyright (c) 2017 Internet Initiative Japan Inc.
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ipsec.c,v 1.20 2018/12/26 08:55:14 knakahara Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ipsec.c,v 1.24 2019/09/19 06:07:24 knakahara Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -80,9 +80,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_ipsec.c,v 1.20 2018/12/26 08:55:14 knakahara Exp 
 #include <netipsec/ipsec.h>
 #include <netipsec/ipsecif.h>
 
-static void if_ipsec_ro_init_pc(void *, void *, struct cpu_info *);
-static void if_ipsec_ro_fini_pc(void *, void *, struct cpu_info *);
-
 static int if_ipsec_clone_create(struct if_clone *, int);
 static int if_ipsec_clone_destroy(struct ifnet *);
 
@@ -94,7 +91,7 @@ static int if_ipsec_encap_detach(struct ipsec_variant *);
 static int if_ipsec_set_tunnel(struct ifnet *,
     struct sockaddr *, struct sockaddr *);
 static void if_ipsec_delete_tunnel(struct ifnet *);
-static int if_ipsec_ensure_flags(struct ifnet *, short);
+static int if_ipsec_ensure_flags(struct ifnet *, u_short);
 static void if_ipsec_attach0(struct ipsec_softc *);
 
 static int if_ipsec_update_variant(struct ipsec_softc *,
@@ -139,9 +136,8 @@ static int if_ipsec_set_addr_port(struct sockaddr *, struct sockaddr *,
  */
 
 /* This list is used in ioctl context only. */
-LIST_HEAD(ipsec_sclist, ipsec_softc);
 static struct {
-	struct ipsec_sclist list;
+	LIST_HEAD(ipsec_sclist, ipsec_softc) list;
 	kmutex_t lock;
 } ipsec_softcs __cacheline_aligned;
 
@@ -183,8 +179,7 @@ if_ipsec_clone_create(struct if_clone *ifc, int unit)
 	sc->ipsec_var = var;
 	mutex_init(&sc->ipsec_lock, MUTEX_DEFAULT, IPL_NONE);
 	sc->ipsec_psz = pserialize_create();
-	sc->ipsec_ro_percpu = percpu_alloc(sizeof(struct ipsec_ro));
-	percpu_foreach(sc->ipsec_ro_percpu, if_ipsec_ro_init_pc, NULL);
+	sc->ipsec_ro_percpu = if_tunnel_alloc_ro_percpu();
 
 	mutex_enter(&ipsec_softcs.lock);
 	LIST_INSERT_HEAD(&ipsec_softcs.list, sc, ipsec_list);
@@ -214,24 +209,6 @@ if_ipsec_attach0(struct ipsec_softc *sc)
 	if_register(&sc->ipsec_if);
 }
 
-static void
-if_ipsec_ro_init_pc(void *p, void *arg __unused, struct cpu_info *ci __unused)
-{
-	struct ipsec_ro *iro = p;
-
-	iro->ir_lock = mutex_obj_alloc(MUTEX_DEFAULT, IPL_NONE);
-}
-
-static void
-if_ipsec_ro_fini_pc(void *p, void *arg __unused, struct cpu_info *ci __unused)
-{
-	struct ipsec_ro *iro = p;
-
-	rtcache_free(&iro->ir_ro);
-
-	mutex_obj_free(iro->ir_lock);
-}
-
 static int
 if_ipsec_clone_destroy(struct ifnet *ifp)
 {
@@ -250,8 +227,7 @@ if_ipsec_clone_destroy(struct ifnet *ifp)
 	bpf_detach(ifp);
 	if_detach(ifp);
 
-	percpu_foreach(sc->ipsec_ro_percpu, if_ipsec_ro_fini_pc, NULL);
-	percpu_free(sc->ipsec_ro_percpu, sizeof(struct ipsec_ro));
+	if_tunnel_free_ro_percpu(sc->ipsec_ro_percpu);
 
 	pserialize_destroy(sc->ipsec_psz);
 	mutex_destroy(&sc->ipsec_lock);
@@ -551,7 +527,7 @@ if_ipsec_ioctl(struct ifnet *ifp, u_long cmd, void *data)
 	int error = 0, size;
 	struct sockaddr *dst, *src;
 	u_long mtu;
-	short oflags = ifp->if_flags;
+	u_short oflags = ifp->if_flags;
 	int bound;
 	struct psref psref;
 
@@ -1105,6 +1081,7 @@ if_ipsec_delete_tunnel(struct ifnet *ifp)
 		mutex_exit(&sc->ipsec_lock);
 		encap_lock_exit();
 		kmem_free(nvar, sizeof(*nvar));
+		kmem_free(nullvar, sizeof(*nullvar));
 		return;
 	}
 
@@ -1162,7 +1139,7 @@ if_ipsec_delete_tunnel(struct ifnet *ifp)
  *               NOTE: use the same encap_cookies.
  */
 static int
-if_ipsec_ensure_flags(struct ifnet *ifp, short oflags)
+if_ipsec_ensure_flags(struct ifnet *ifp, u_short oflags)
 {
 	struct ipsec_softc *sc = ifp->if_softc;
 	struct ipsec_variant *ovar, *nvar, *nullvar;
@@ -1192,6 +1169,8 @@ if_ipsec_ensure_flags(struct ifnet *ifp, short oflags)
 		/* nothing to do */
 		mutex_exit(&sc->ipsec_lock);
 		encap_lock_exit();
+		kmem_free(nvar, sizeof(*nvar));
+		kmem_free(nullvar, sizeof(*nullvar));
 		return 0;
 	}
 

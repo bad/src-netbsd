@@ -1,4 +1,4 @@
-/*	$NetBSD: route.h,v 1.120 2018/10/30 05:54:42 ozaki-r Exp $	*/
+/*	$NetBSD: route.h,v 1.125 2019/09/19 04:08:29 ozaki-r Exp $	*/
 
 /*
  * Copyright (c) 1980, 1986, 1993
@@ -42,6 +42,7 @@
 #include <sys/rwlock.h>
 #include <sys/condvar.h>
 #include <sys/pserialize.h>
+#include <sys/percpu.h>
 #endif
 #include <sys/psref.h>
 
@@ -507,6 +508,24 @@ struct rtentry *
 
 void	rtcache_unref(struct rtentry *, struct route *);
 
+percpu_t *
+	rtcache_percpu_alloc(void);
+
+static inline struct route *
+rtcache_percpu_getref(percpu_t *pc)
+{
+
+	return *(struct route **)percpu_getref(pc);
+}
+
+static inline void
+rtcache_percpu_putref(percpu_t *pc)
+{
+
+	percpu_putref(pc);
+}
+
+
 /* rtsock */
 void	rt_ieee80211msg(struct ifnet *, int, void *, size_t);
 void	rt_ifannouncemsg(struct ifnet *, int);
@@ -515,12 +534,14 @@ void	rt_missmsg(int, const struct rt_addrinfo *, int, int);
 struct mbuf *
 	rt_msg1(int, struct rt_addrinfo *, void *, int);
 int	rt_msg3(int, struct rt_addrinfo *, void *, struct rt_walkarg *, int *);
-void	rt_newaddrmsg(int, struct ifaddr *, int, struct rtentry *);
+void	rt_addrmsg(int, struct ifaddr *);
+void	rt_addrmsg_src(int, struct ifaddr *, const struct sockaddr *);
+void	rt_addrmsg_rt(int, struct ifaddr *, int, struct rtentry *);
 void	route_enqueue(struct mbuf *, int);
 
 struct llentry;
-void	rt_clonedmsg(const struct sockaddr *, const struct ifnet *,
-	    const struct rtentry *);
+void	rt_clonedmsg(int, const struct sockaddr *, const uint8_t *,
+            const struct ifnet *);
 
 void	rt_setmetrics(void *, struct rtentry *);
 
@@ -543,6 +564,8 @@ struct rtentry *
 	rtbl_search_matched_entry(sa_family_t,
 	    int (*)(struct rtentry *, void *), void *);
 void	rtbl_init(void);
+
+void sysctl_net_route_setup(struct sysctllog **, int, const char *);
 
 #endif /* _KERNEL */
 

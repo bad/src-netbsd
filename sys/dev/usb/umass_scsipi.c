@@ -1,4 +1,4 @@
-/*	$NetBSD: umass_scsipi.c,v 1.56 2018/11/13 10:30:57 mlelstv Exp $	*/
+/*	$NetBSD: umass_scsipi.c,v 1.62 2019/05/30 21:44:49 mlelstv Exp $	*/
 
 /*
  * Copyright (c) 2001, 2003, 2012 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: umass_scsipi.c,v 1.56 2018/11/13 10:30:57 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: umass_scsipi.c,v 1.62 2019/05/30 21:44:49 mlelstv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -41,15 +41,17 @@ __KERNEL_RCSID(0, "$NetBSD: umass_scsipi.c,v 1.56 2018/11/13 10:30:57 mlelstv Ex
 #include "scsibus.h"
 
 #include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/kernel.h>
-#include <sys/conf.h>
 #include <sys/buf.h>
 #include <sys/bufq.h>
+#include <sys/conf.h>
 #include <sys/device.h>
+#include <sys/disk.h>		/* XXX */
 #include <sys/ioctl.h>
+#include <sys/kernel.h>
+#include <sys/kmem.h>
 #include <sys/lwp.h>
 #include <sys/malloc.h>
+#include <sys/systm.h>
 
 /* SCSI & ATAPI */
 #include <sys/scsiio.h>
@@ -64,7 +66,6 @@ __KERNEL_RCSID(0, "$NetBSD: umass_scsipi.c,v 1.56 2018/11/13 10:30:57 mlelstv Ex
 #include <dev/scsipi/scsi_disk.h>
 #include <dev/scsipi/scsi_changer.h>
 
-#include <sys/disk.h>		/* XXX */
 #include <dev/scsipi/sdvar.h>	/* XXX */
 
 /* USB */
@@ -144,11 +145,20 @@ umass_scsi_attach(struct umass_softc *sc)
 		scsiprint);
 	mutex_enter(&sc->sc_lock);
 	if (--sc->sc_refcnt < 0)
-		usb_detach_broadcast(sc->sc_dev, &sc->sc_detach_cv);
+		cv_broadcast(&sc->sc_detach_cv);
 	mutex_exit(&sc->sc_lock);
 
 
 	return 0;
+}
+
+void
+umass_scsi_detach(struct umass_softc *sc)
+{
+	struct umass_scsipi_softc *scbus = (struct umass_scsipi_softc *)sc->bus;
+
+	kmem_free(scbus, sizeof(*scbus));
+	sc->bus = NULL;
 }
 #endif
 
@@ -177,10 +187,19 @@ umass_atapi_attach(struct umass_softc *sc)
 		atapiprint);
 	mutex_enter(&sc->sc_lock);
 	if (--sc->sc_refcnt < 0)
-		usb_detach_broadcast(sc->sc_dev, &sc->sc_detach_cv);
+		cv_broadcast(&sc->sc_detach_cv);
 	mutex_exit(&sc->sc_lock);
 
 	return 0;
+}
+
+void
+umass_atapi_detach(struct umass_softc *sc)
+{
+	struct umass_scsipi_softc *scbus = (struct umass_scsipi_softc *)sc->bus;
+
+	kmem_free(scbus, sizeof(*scbus));
+	sc->bus = NULL;
 }
 #endif
 
@@ -189,11 +208,12 @@ umass_scsipi_setup(struct umass_softc *sc)
 {
 	struct umass_scsipi_softc *scbus;
 
-	scbus = malloc(sizeof(*scbus), M_DEVBUF, M_WAITOK | M_ZERO);
+	scbus = kmem_zalloc(sizeof(*scbus), KM_SLEEP);
 	sc->bus = &scbus->base;
 
 	/* Only use big commands for USB SCSI devices. */
-	sc->sc_busquirks |= PQUIRK_ONLYBIG;
+	/* Do not ask for timeouts.  */
+	sc->sc_busquirks |= PQUIRK_ONLYBIG|PQUIRK_NOREPSUPPOPC;
 
 	/* Fill in the adapter. */
 	memset(&scbus->sc_adapter, 0, sizeof(scbus->sc_adapter));
@@ -438,7 +458,7 @@ umass_scsipi_cb(struct umass_softc *sc, void *priv, int residue, int status)
 			cmdlen = UFI_COMMAND_LENGTH;	/* XXX */
 		else
 			cmdlen = sizeof(scbus->sc_sense_cmd);
-		if (periph->periph_version < 0x05) /* SPC-3 */
+		if (periph->periph_version < 0x04) /* SPC-2 */
 			senselen = 18;
 		else
 			senselen = sizeof(xs->sense);
@@ -478,6 +498,7 @@ umass_scsipi_sense_cb(struct umass_softc *sc, void *priv, int residue,
 {
 	UMASSHIST_FUNC(); UMASSHIST_CALLED();
 	struct scsipi_xfer *xs = priv;
+	size_t extra;
 
 	DPRINTFM(UDMASS_CMD, "sc %#jx: xs=%#jx residue=%jd status=%jd",
 	    (uintptr_t)sc, (uintptr_t)xs, residue, status);
@@ -487,7 +508,9 @@ umass_scsipi_sense_cb(struct umass_softc *sc, void *priv, int residue,
 	case STATUS_CMD_OK:
 	case STATUS_CMD_UNKNOWN:
 		/* getting sense data succeeded */
-		if (residue == 0 || residue == 14)/* XXX */
+		extra = sizeof(xs->sense.scsi_sense)
+		      - sizeof(xs->sense.scsi_sense.extra_bytes);
+		if (residue <= extra)
 			xs->error = XS_SENSE;
 		else
 			xs->error = XS_SHORTSENSE;

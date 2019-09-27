@@ -1,4 +1,4 @@
-/*	$NetBSD: exec_elf.c,v 1.97 2018/04/12 20:49:08 christos Exp $	*/
+/*	$NetBSD: exec_elf.c,v 1.100 2019/09/16 11:11:34 christos Exp $	*/
 
 /*-
  * Copyright (c) 1994, 2000, 2005, 2015 The NetBSD Foundation, Inc.
@@ -57,7 +57,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(1, "$NetBSD: exec_elf.c,v 1.97 2018/04/12 20:49:08 christos Exp $");
+__KERNEL_RCSID(1, "$NetBSD: exec_elf.c,v 1.100 2019/09/16 11:11:34 christos Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_pax.h"
@@ -89,6 +89,7 @@ extern struct emul emul_netbsd;
 
 #define elf_check_header	ELFNAME(check_header)
 #define elf_copyargs		ELFNAME(copyargs)
+#define elf_populate_auxv	ELFNAME(populate_auxv)
 #define elf_load_interp		ELFNAME(load_interp)
 #define elf_load_psection	ELFNAME(load_psection)
 #define exec_elf_makecmds	ELFNAME2(exec,makecmds)
@@ -149,22 +150,17 @@ elf_placedynexec(struct exec_package *epp, Elf_Ehdr *eh, Elf_Phdr *ph)
 	return 0;
 }
 
-/*
- * Copy arguments onto the stack in the normal way, but add some
- * extra information in case of dynamic binding.
- */
+
 int
-elf_copyargs(struct lwp *l, struct exec_package *pack,
-    struct ps_strings *arginfo, char **stackp, void *argp)
+elf_populate_auxv(struct lwp *l, struct exec_package *pack, char **stackp)
 {
 	size_t len, vlen;
 	AuxInfo ai[ELF_AUX_ENTRIES], *a, *execname;
 	struct elf_args *ap;
+	char *path = l->l_proc->p_path;
 	int error;
 
-	if ((error = copyargs(l, pack, arginfo, stackp, argp)) != 0)
-		return error;
-
+	execname = NULL;
 	a = ai;
 
 	memset(ai, 0, sizeof(ai));
@@ -230,13 +226,14 @@ elf_copyargs(struct lwp *l, struct exec_package *pack,
 		a->a_v = l->l_proc->p_stackbase;
 		a++;
 
-		execname = a;
-		a->a_type = AT_SUN_EXECNAME;
-		a++;
+		/* "/" means fexecve(2) could not resolve the pathname */
+		if (path[0] == '/' && path[1] != '\0') {
+			execname = a;
+			a->a_type = AT_SUN_EXECNAME;
+			a++;
+		}
 
 		exec_free_emul_arg(pack);
-	} else {
-		execname = NULL;
 	}
 
 	a->a_type = AT_NULL;
@@ -248,7 +245,6 @@ elf_copyargs(struct lwp *l, struct exec_package *pack,
 	KASSERT(vlen <= sizeof(ai));
 
 	if (execname) {
-		char *path = l->l_proc->p_path;
 		execname->a_v = (uintptr_t)(*stackp + vlen);
 		len = strlen(path) + 1;
 		if ((error = copyout(path, (*stackp + vlen), len)) != 0)
@@ -263,6 +259,22 @@ elf_copyargs(struct lwp *l, struct exec_package *pack,
 	*stackp += vlen + len;
 
 	return 0;
+}
+
+/*
+ * Copy arguments onto the stack in the normal way, but add some
+ * extra information in case of dynamic binding.
+ */
+int
+elf_copyargs(struct lwp *l, struct exec_package *pack,
+    struct ps_strings *arginfo, char **stackp, void *argp)
+{
+	int error;
+
+	if ((error = copyargs(l, pack, arginfo, stackp, argp)) != 0)
+		return error;
+
+	return elf_populate_auxv(l, pack, stackp);
 }
 
 /*

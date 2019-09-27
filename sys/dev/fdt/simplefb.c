@@ -1,4 +1,4 @@
-/* $NetBSD: simplefb.c,v 1.6 2018/07/23 00:51:40 macallan Exp $ */
+/* $NetBSD: simplefb.c,v 1.8 2019/07/23 14:34:12 rin Exp $ */
 
 /*-
  * Copyright (c) 2017 Jared McNeill <jmcneill@invisible.ca>
@@ -29,7 +29,7 @@
 #include "opt_wsdisplay_compat.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: simplefb.c,v 1.6 2018/07/23 00:51:40 macallan Exp $");
+__KERNEL_RCSID(0, "$NetBSD: simplefb.c,v 1.8 2019/07/23 14:34:12 rin Exp $");
 
 #include <sys/param.h>
 #include <sys/bus.h>
@@ -114,10 +114,11 @@ simplefb_mmap(void *v, void *vs, off_t off, int prot)
 {
 	struct simplefb_softc * const sc = v;
 
-	if (off < 0 || off >= sc->sc_gen.sc_fbsize)
+	if (off < 0 || off >= (sc->sc_paddr & PAGE_MASK) +
+	    sc->sc_gen.sc_fbsize)
 		return -1;
 
-	return bus_space_mmap(sc->sc_bst, sc->sc_paddr, off, prot,
+	return bus_space_mmap(sc->sc_bst, trunc_page(sc->sc_paddr), off, prot,
 	    BUS_SPACE_MAP_LINEAR | BUS_SPACE_MAP_PREFETCHABLE);
 }
 
@@ -199,6 +200,7 @@ simplefb_attach_genfb(struct simplefb_softc *sc)
 
 #ifdef WSDISPLAY_MULTICONS
 	const bool is_console = true;
+	genfb_cnattach();
 #else
 	const bool is_console = phandle == simplefb_console_phandle;
 	if (is_console)
