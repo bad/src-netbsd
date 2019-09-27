@@ -1,4 +1,4 @@
-/*	$NetBSD: emul.c,v 1.189 2018/12/05 19:56:49 christos Exp $	*/
+/*	$NetBSD: emul.c,v 1.192 2019/09/26 17:52:50 bad Exp $	*/
 
 /*
  * Copyright (c) 2007-2011 Antti Kantee.  All Rights Reserved.
@@ -26,7 +26,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: emul.c,v 1.189 2018/12/05 19:56:49 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: emul.c,v 1.192 2019/09/26 17:52:50 bad Exp $");
 
 #include <sys/param.h>
 #include <sys/cprng.h>
@@ -256,6 +256,33 @@ void (*delay_func)(unsigned int) = rump_delay;
 __strong_alias(delay,rump_delay);
 __strong_alias(_delay,rump_delay);
 
+/* Weak alias for getcwd_common to be used unless librumpvfs is present. */
+
+int rump_getcwd_common(struct vnode *, struct vnode *, char **, char *,
+    int, int, struct lwp *);
+int
+rump_getcwd_common(struct vnode *lvp, struct vnode *rvp, char **bpp, char *bufp,
+    int limit, int flags, struct lwp *l)
+{
+
+	return ENOENT;
+}
+__weak_alias(getcwd_common,rump_getcwd_common);
+
+/* Weak alias for vnode_to_path to be used unless librumpvfs is present. */
+
+int rump_vnode_to_path(char *, size_t, struct vnode *, struct lwp *,
+    struct proc *);
+int
+rump_vnode_to_path(char *path, size_t len, struct vnode *vp, struct lwp *curl,
+    struct proc *p)
+{
+
+	return ENOENT; /* pretend getcwd_common() failed. */
+}
+__weak_alias(vnode_to_path,rump_vnode_to_path);
+
+
 /* Weak aliases for fstrans to be used unless librumpvfs is present. */
 
 void rump_fstrans_start(struct mount *);
@@ -291,6 +318,15 @@ rump_fstrans_done(struct mount *mp)
 
 }
 __weak_alias(fstrans_done,rump_fstrans_done);
+
+
+void rump_fstrans_lwp_dtor(struct lwp *);
+void
+rump_fstrans_lwp_dtor(struct lwp *l)
+{
+
+}
+__weak_alias(fstrans_lwp_dtor,rump_fstrans_lwp_dtor);
 
 /*
  * Provide weak aliases for tty routines used by printf.

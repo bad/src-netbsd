@@ -1,4 +1,4 @@
-/*	$NetBSD: nvme.c,v 1.41 2018/12/01 15:07:58 jdolecek Exp $	*/
+/*	$NetBSD: nvme.c,v 1.46 2019/09/26 11:50:32 nonaka Exp $	*/
 /*	$OpenBSD: nvme.c,v 1.49 2016/04/18 05:59:50 dlg Exp $ */
 
 /*
@@ -18,7 +18,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: nvme.c,v 1.41 2018/12/01 15:07:58 jdolecek Exp $");
+__KERNEL_RCSID(0, "$NetBSD: nvme.c,v 1.46 2019/09/26 11:50:32 nonaka Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -374,7 +374,7 @@ nvme_attach(struct nvme_softc *sc)
 	sc->sc_rdy_to = NVME_CAP_TO(cap);
 	sc->sc_mps = 1 << mps;
 	sc->sc_mdts = MAXPHYS;
-	sc->sc_max_sgl = 2;
+	sc->sc_max_sgl = btoc(round_page(sc->sc_mdts));
 
 	if (nvme_disable(sc) != 0) {
 		aprint_error_dev(sc->sc_dev, "unable to disable controller\n");
@@ -397,6 +397,10 @@ nvme_attach(struct nvme_softc *sc)
 
 	if (nvme_identify(sc, NVME_CAP_MPSMIN(cap)) != 0) {
 		aprint_error_dev(sc->sc_dev, "unable to identify controller\n");
+		goto disable;
+	}
+	if (sc->sc_nn == 0) {
+		aprint_error_dev(sc->sc_dev, "namespace not found\n");
 		goto disable;
 	}
 
@@ -479,6 +483,7 @@ nvme_rescan(device_t self, const char *attr, const int *flags)
 		naa.naa_nsid = i + 1;
 		naa.naa_qentries = (ioq_entries - 1) * sc->sc_nq;
 		naa.naa_maxphys = sc->sc_mdts;
+		naa.naa_typename = sc->sc_modelname;
 		sc->sc_namespaces[i].dev = config_found(sc->sc_dev, &naa,
 		    nvme_print);
 	}
@@ -644,7 +649,7 @@ nvme_ns_dobio(struct nvme_softc *sc, uint16_t nsid, void *cookie,
     struct buf *bp, void *data, size_t datasize,
     int secsize, daddr_t blkno, int flags, nvme_nnc_done nnc_done)
 {
-	struct nvme_queue *q = nvme_get_q(sc);
+	struct nvme_queue *q = nvme_get_q(sc, bp, false);
 	struct nvme_ccb *ccb;
 	bus_dmamap_t dmap;
 	int i, error;
@@ -786,7 +791,7 @@ nvme_ns_sync_finished(void *cookie)
 int
 nvme_ns_sync(struct nvme_softc *sc, uint16_t nsid, int flags)
 {
-	struct nvme_queue *q = nvme_get_q(sc);
+	struct nvme_queue *q = nvme_get_q(sc, NULL, true);
 	struct nvme_ccb *ccb;
 	int result = 0;
 
@@ -796,8 +801,7 @@ nvme_ns_sync(struct nvme_softc *sc, uint16_t nsid, int flags)
 	}
 
 	ccb = nvme_ccb_get(q, true);
-	if (ccb == NULL)
-		return EAGAIN;
+	KASSERT(ccb != NULL);
 
 	ccb->ccb_done = nvme_ns_sync_done;
 	ccb->ccb_cookie = &result;
@@ -1154,7 +1158,7 @@ nvme_command_passthrough(struct nvme_softc *sc, struct nvme_pt_command *pt,
 	    (pt->buf != NULL && (pt->len == 0 || pt->len > sc->sc_mdts)))
 		return EINVAL;
 
-	q = is_adminq ? sc->sc_admin_q : nvme_get_q(sc);
+	q = is_adminq ? sc->sc_admin_q : nvme_get_q(sc, NULL, true);
 	ccb = nvme_ccb_get(q, true);
 	KASSERT(ccb != NULL);
 
@@ -1302,8 +1306,8 @@ nvme_poll_done(struct nvme_queue *q, struct nvme_ccb *ccb,
 {
 	struct nvme_poll_state *state = ccb->ccb_cookie;
 
-	SET(cqe->flags, htole16(NVME_CQE_PHASE));
 	state->c = *cqe;
+	SET(state->c.flags, htole16(NVME_CQE_PHASE));
 
 	ccb->ccb_cookie = state->cookie;
 	state->done(q, ccb, &state->c);
@@ -1448,6 +1452,8 @@ nvme_identify(struct nvme_softc *sc, u_int mps)
 	    sizeof(sc->sc_identify.fr), VIS_TRIM|VIS_SAFE|VIS_OCTAL);
 	aprint_normal_dev(sc->sc_dev, "%s, firmware %s, serial %s\n", mn, fr,
 	    sn);
+
+	strlcpy(sc->sc_modelname, mn, sizeof(sc->sc_modelname));
 
 	if (sc->sc_identify.mdts > 0) {
 		mdts = (1 << sc->sc_identify.mdts) * (1 << mps);
@@ -1867,7 +1873,7 @@ nvme_dmamem_alloc(struct nvme_softc *sc, size_t size)
 
 	ndm->ndm_size = size;
 
-	if (bus_dmamap_create(sc->sc_dmat, size, 1, size, 0,
+	if (bus_dmamap_create(sc->sc_dmat, size, btoc(round_page(size)), size, 0,
 	    BUS_DMA_WAITOK | BUS_DMA_ALLOCNOW, &ndm->ndm_map) != 0)
 		goto ndmfree;
 

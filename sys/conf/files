@@ -1,4 +1,4 @@
-#	$NetBSD: files,v 1.1221 2018/12/29 11:30:12 maxv Exp $
+#	$NetBSD: files,v 1.1240 2019/09/22 22:59:38 christos Exp $
 #	@(#)files.newconf	7.5 (Berkeley) 5/10/93
 
 version 	20171118
@@ -30,7 +30,10 @@ defparam opt_syslimits.h	CHILD_MAX OPEN_MAX
 defflag opt_diagnostic.h	_DIAGNOSTIC
 defflag				GPROF
 defflag				KASAN
+defflag opt_kasan.h		KASAN_PANIC
 defflag				KLEAK
+defflag				KCOV
+defflag opt_pool.h		POOL_QUARANTINE
 
 defparam opt_copy_symtab.h	makeoptions_COPY_SYMTAB
 
@@ -72,7 +75,10 @@ defflag				CPU_IN_CKSUM
 defflag opt_dtrace.h		KDTRACE_HOOKS
 
 defflag	opt_sysv.h		SYSVMSG SYSVSEM	SYSVSHM
-defparam opt_sysvparam.h	SHMMAXPGS SEMMNI SEMMNS SEMUME SEMMNU
+defparam opt_sysvparam.h	MSGMAX MSGMNI MSGMNB MSGTQL MSGSSZ MSGSEG
+defparam opt_sysvparam.h	SEMMAP SEMMNI SEMMNS SEMMNU SEMMSL SEMOPM
+defparam opt_sysvparam.h	SEMUME SEMUSZ SEMVMX SEMAEM
+defparam opt_sysvparam.h	SHMMAX SHMMIN SHMMNI SHMSEG SHMMAXPGS
 
 defflag	opt_ntp.h		PPS_SYNC PPS_DEBUG NTP
 
@@ -135,7 +141,8 @@ defflag opt_todr.h		TODR_DEBUG
 # compatibility options
 #
 defflag opt_compat_netbsd.h	COMPAT_NETBSD
-defflag	opt_compat_netbsd.h	COMPAT_80: COMPAT_NETBSD
+defflag	opt_compat_netbsd.h	COMPAT_90: COMPAT_NETBSD
+defflag	opt_compat_netbsd.h	COMPAT_80: COMPAT_90, COMPAT_NETBSD
 defflag	opt_compat_netbsd.h	COMPAT_70: COMPAT_80, COMPAT_NETBSD
 defflag	opt_compat_netbsd.h	COMPAT_60: COMPAT_70, COMPAT_NETBSD
 defflag	opt_compat_netbsd.h	COMPAT_50: COMPAT_60, COMPAT_NETBSD
@@ -151,18 +158,26 @@ defflag	opt_compat_netbsd.h	COMPAT_11: COMPAT_12, COMPAT_NETBSD
 defflag	opt_compat_netbsd.h	COMPAT_10: COMPAT_11, COMPAT_NETBSD
 defflag	opt_compat_netbsd.h	COMPAT_09: COMPAT_10, COMPAT_NETBSD
 defflag				COMPAT_OSSAUDIO
-defflag				COMPAT_FREEBSD: COMPAT_30
-defflag				COMPAT_LINUX: COMPAT_NETBSD
-defflag				COMPAT_OSF1
-defflag				COMPAT_SUNOS: COMPAT_30
+defflag				COMPAT_43
+defflag				COMPAT_FREEBSD: COMPAT_09, COMPAT_43
+defflag				COMPAT_LINUX: COMPAT_NETBSD, COMPAT_43
+defflag				COMPAT_SUNOS: COMPAT_09, COMPAT_43
 defflag				COMPAT_ULTRIX: COMPAT_50
 defflag				COMPAT_NETBSD32
-defflag				COMPAT_LINUX32 : COMPAT_LINUX, COMPAT_NETBSD32
+defflag				COMPAT_SYSV
+defflag				SYSV_IPC	: SYSVSHM, SYSVSEM, SYSVMSG
+defflag				COMPAT_NETBSD32_SYSVIPC : SYSV_IPC,
+							  COMPAT_SYSV,
+							  COMPAT_NETBSD32
+defflag				COMPAT_LINUX32 : COMPAT_LINUX, COMPAT_NETBSD32,
+						 COMPAT_50, COMPAT_SYSV,
+						 COMPAT_NETBSD32_SYSVIPC
 defflag				COMPAT_AOUT_M68K: COMPAT_40
 defflag				COMPAT_M68K4K
 defflag				COMPAT_VAX1K
-defflag				COMPAT_43
 defflag	opt_compat_netbsd.h	COMPAT_NOMID
+
+include	"compat/common/files.common"
 
 define	machdep
 defflag	opt_machdep.h		MACHDEP
@@ -182,8 +197,8 @@ include "crypto/camellia/files.camellia"
 # General-purpose crypto processing framework.
 include "opencrypto/files.opencrypto"
 
-# NIST SP800.90 CTR DRBG
-include "crypto/nist_ctr_drbg/files.nist_ctr_drbg"
+# NIST SP800-90A Hash_DRBG
+include "crypto/nist_hash_drbg/files.nist_hash_drbg"
 
 # ChaCha-based fast PRNG
 include "crypto/cprng_fast/files.cprng_fast"
@@ -302,6 +317,7 @@ defparam opt_kgdb.h		KGDB_DEV KGDB_DEVNAME KGDB_DEVPORT
 defflag				LOCKDEBUG
 defflag				SYSCALL_DEBUG
 defflag	opt_kstack.h		KSTACK_CHECK_MAGIC
+defflag				PSREF_DEBUG
 
 # memory (ram) disk options
 #
@@ -376,6 +392,10 @@ file	dev/ic/nslm7x.c			lm			needs-flag
 
 device	spdmem
 file	dev/ic/spdmem.c			spdmem
+
+# SSD1306 or SH1106 OLED/PLED display (attaches via I2C or SPI)
+device	ssdfb:	wsemuldisplaydev
+file	dev/ic/ssdfb.c	ssdfb
 
 # Generic HID support (used by USB, bluetooth and i2c)
 include "dev/hid/files.hid"
@@ -1132,10 +1152,6 @@ file	dev/ic/acpipmtimer.c	acpipmtimer
 device 	hpet
 file 	dev/ic/hpet.c		hpet			needs-flag
 
-# DesignWare timer
-device	dwctmr
-file	dev/ic/dwc_tmr.c	dwctmr
-
 # SMSC LAN9118 Family Ethernet Controller
 #
 device	smsh: arp, ether, ifnet, mii
@@ -1274,6 +1290,11 @@ file	dev/usb/ehci.c			ehci			needs-flag
 #
 device	xhci: usbus, usbroothub, usb_dma
 file	dev/usb/xhci.c			xhci			needs-flag
+
+# vHCI USB controller
+#
+defpseudodev vhci: usbus, usbroothub
+file	dev/usb/vhci.c			vhci			needs-flag
 
 # Mentor graphics OTG IP
 device	motg: usbus, usbroothub
@@ -1470,6 +1491,10 @@ file	dev/led.c			leds
 # IPMI
 device	ipmi: sysmon_envsys, sysmon_wdog
 attach	ipmi at ipmibus
+
+# Designware HDMI TX
+device	dwhdmi: edid, videomode, drmkms, drmkms_i2c
+file	dev/ic/dw_hdmi.c		dwhdmi
 
 #
 # File systems

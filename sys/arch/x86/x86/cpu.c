@@ -1,4 +1,4 @@
-/*	$NetBSD: cpu.c,v 1.164 2018/12/04 19:27:22 cherry Exp $	*/
+/*	$NetBSD: cpu.c,v 1.172 2019/08/30 07:53:47 mrg Exp $	*/
 
 /*
  * Copyright (c) 2000-2012 NetBSD Foundation, Inc.
@@ -62,7 +62,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.164 2018/12/04 19:27:22 cherry Exp $");
+__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.172 2019/08/30 07:53:47 mrg Exp $");
 
 #include "opt_ddb.h"
 #include "opt_mpbios.h"		/* for MPDEBUG */
@@ -584,15 +584,9 @@ cpu_init(struct cpu_info *ci)
 
 	lcr0(rcr0() | CR0_WP);
 
-	/*
-	 * On a P6 or above, enable global TLB caching if the
-	 * hardware supports it.
-	 */
+	/* If global TLB caching is supported, enable it */
 	if (cpu_feature[0] & CPUID_PGE)
-#ifdef SVS
-		if (!svs_enabled)
-#endif
-		cr4 |= CR4_PGE;	/* enable global TLB caching */
+		cr4 |= CR4_PGE;
 
 	/*
 	 * If we have FXSAVE/FXRESTOR, use them.
@@ -618,6 +612,12 @@ cpu_init(struct cpu_info *ci)
 	/* If SMAP is supported, enable it */
 	if (cpu_feature[5] & CPUID_SEF_SMAP)
 		cr4 |= CR4_SMAP;
+
+#ifdef SVS
+	/* If PCID is supported, enable it */
+	if (svs_pcid)
+		cr4 |= CR4_PCIDE;
+#endif
 
 	if (cr4) {
 		cr4 |= rcr4();
@@ -691,8 +691,10 @@ cpu_boot_secondary_processors(void)
 	kcpuset_t *cpus;
 	u_long i;
 
+#ifndef XEN
 	/* Now that we know the number of CPUs, patch the text segment. */
 	x86_patch(false);
+#endif
 
 	kcpuset_create(&cpus, true);
 	kcpuset_set(cpus, cpu_index(curcpu()));
@@ -754,12 +756,14 @@ cpu_init_idle_lwps(void)
 void
 cpu_start_secondary(struct cpu_info *ci)
 {
-	paddr_t mp_pdirpa;
 	u_long psl;
 	int i;
 
+#if NLAPIC > 0
+	paddr_t mp_pdirpa;
 	mp_pdirpa = pmap_init_tmp_pgtbl(mp_trampoline_paddr);
 	cpu_copy_trampoline(mp_pdirpa);
+#endif
 
 	atomic_or_32(&ci->ci_flags, CPUF_AP);
 	ci->ci_curlwp = ci->ci_data.cpu_idlelwp;
@@ -774,7 +778,7 @@ cpu_start_secondary(struct cpu_info *ci)
 	KASSERT(cpu_starting == NULL);
 	cpu_starting = ci;
 	for (i = 100000; (!(ci->ci_flags & CPUF_PRESENT)) && i > 0; i--) {
-		i8254_delay(10);
+		x86_delay(10);
 	}
 
 	if ((ci->ci_flags & CPUF_PRESENT) == 0) {
@@ -810,7 +814,7 @@ cpu_boot_secondary(struct cpu_info *ci)
 
 	atomic_or_32(&ci->ci_flags, CPUF_GO);
 	for (i = 100000; (!(ci->ci_flags & CPUF_RUNNING)) && i > 0; i--) {
-		i8254_delay(10);
+		x86_delay(10);
 	}
 	if ((ci->ci_flags & CPUF_RUNNING) == 0) {
 		aprint_error_dev(ci->ci_dev, "failed to start\n");
@@ -915,7 +919,7 @@ cpu_hatch(void *v)
 #ifdef PAE
 	pd_entry_t * l3_pd = ci->ci_pae_l3_pdir;
 	for (i = 0 ; i < PDP_SIZE; i++) {
-		l3_pd[i] = pmap_kernel()->pm_pdirpa[i] | PG_V;
+		l3_pd[i] = pmap_kernel()->pm_pdirpa[i] | PTE_P;
 	}
 	lcr3(ci->ci_pae_l3_pdirpa);
 #else
@@ -948,7 +952,9 @@ cpu_hatch(void *v)
 	cpu_get_tsc_freq(ci);
 
 	s = splhigh();
+#if NLAPIC > 0
 	lapic_write_tpri(0);
+#endif
 	x86_enable_intr();
 	splx(s);
 	x86_errata();
@@ -973,8 +979,14 @@ cpu_debug_dump(void)
 {
 	struct cpu_info *ci;
 	CPU_INFO_ITERATOR cii;
+	const char sixtyfour64space[] = 
+#ifdef _LP64
+			   "        "
+#endif
+			   "";
 
-	db_printf("addr		dev	id	flags	ipis	curlwp 		fpcurlwp\n");
+	db_printf("addr		%sdev	id	flags	ipis	curlwp 		"
+		  "fpcurlwp\n", sixtyfour64space);
 	for (CPU_INFO_FOREACH(cii, ci)) {
 		db_printf("%p	%s	%ld	%x	%x	%10p	%10p\n",
 		    ci,
@@ -1032,7 +1044,6 @@ cpu_copy_trampoline(paddr_t pdir_pa)
 int
 mp_cpu_start(struct cpu_info *ci, paddr_t target)
 {
-	unsigned short dwordptr[2];
 	int error;
 
 	/*
@@ -1048,15 +1059,15 @@ mp_cpu_start(struct cpu_info *ci, paddr_t target)
 	outb(IO_RTC, NVRAM_RESET);
 	outb(IO_RTC+1, NVRAM_RESET_JUMP);
 
+#if NLAPIC > 0
 	/*
 	 * "and the warm reset vector (DWORD based at 40:67) to point
 	 * to the AP startup code ..."
 	 */
-
+	unsigned short dwordptr[2];
 	dwordptr[0] = 0;
 	dwordptr[1] = target >> 4;
 
-#if NLAPIC > 0
 	memcpy((uint8_t *)cmos_data_mapping + 0x467, dwordptr, 4);
 #endif
 
@@ -1079,7 +1090,7 @@ mp_cpu_start(struct cpu_info *ci, paddr_t target)
 			    __func__);
 			return error;
 		}
-		i8254_delay(10000);
+		x86_delay(10000);
 
 		error = x86_ipi_startup(ci->ci_cpuid, target / PAGE_SIZE);
 		if (error != 0) {
@@ -1087,7 +1098,7 @@ mp_cpu_start(struct cpu_info *ci, paddr_t target)
 			    __func__);
 			return error;
 		}
-		i8254_delay(200);
+		x86_delay(200);
 
 		error = x86_ipi_startup(ci->ci_cpuid, target / PAGE_SIZE);
 		if (error != 0) {
@@ -1095,7 +1106,7 @@ mp_cpu_start(struct cpu_info *ci, paddr_t target)
 			    __func__);
 			return error;
 		}
-		i8254_delay(200);
+		x86_delay(200);
 	}
 
 	return 0;
@@ -1253,7 +1264,7 @@ cpu_get_tsc_freq(struct cpu_info *ci)
 
 	if (cpu_hascounter()) {
 		last_tsc = cpu_counter_serializing();
-		i8254_delay(100000);
+		x86_delay(100000);
 		ci->ci_data.cpu_cc_freq =
 		    (cpu_counter_serializing() - last_tsc) * 10;
 	}
@@ -1316,7 +1327,7 @@ cpu_load_pmap(struct pmap *pmap, struct pmap *oldpmap)
 		x86_disable_intr();
 
 	for (i = 0 ; i < PDP_SIZE; i++) {
-		l3_pd[i] = pmap->pm_pdirpa[i] | PG_V;
+		l3_pd[i] = pmap->pm_pdirpa[i] | PTE_P;
 	}
 
 	if (interrupts_enabled)

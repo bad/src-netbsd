@@ -1,4 +1,4 @@
-/*	$NetBSD: subr_asan.c,v 1.2 2018/12/23 12:15:01 maxv Exp $	*/
+/*	$NetBSD: subr_asan.c,v 1.14 2019/09/22 10:35:12 maxv Exp $	*/
 
 /*
  * Copyright (c) 2018 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: subr_asan.c,v 1.2 2018/12/23 12:15:01 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: subr_asan.c,v 1.14 2019/09/22 10:35:12 maxv Exp $");
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -43,6 +43,12 @@ __KERNEL_RCSID(0, "$NetBSD: subr_asan.c,v 1.2 2018/12/23 12:15:01 maxv Exp $");
 
 #include <uvm/uvm.h>
 
+#ifdef KASAN_PANIC
+#define REPORT panic
+#else
+#define REPORT printf
+#endif
+
 /* ASAN constants. Part of the compiler ABI. */
 #define KASAN_SHADOW_SCALE_SHIFT	3
 #define KASAN_SHADOW_SCALE_SIZE		(1UL << KASAN_SHADOW_SCALE_SHIFT)
@@ -50,17 +56,6 @@ __KERNEL_RCSID(0, "$NetBSD: subr_asan.c,v 1.2 2018/12/23 12:15:01 maxv Exp $");
 
 /* The MD code. */
 #include <machine/asan.h>
-
-/* Our redzone values. */
-#define KASAN_GLOBAL_REDZONE	0xFA
-#define KASAN_MEMORY_REDZONE	0xFB
-
-/* Stack redzone values. Part of the compiler ABI. */
-#define KASAN_STACK_LEFT	0xF1
-#define KASAN_STACK_MID		0xF2
-#define KASAN_STACK_RIGHT	0xF3
-#define KASAN_STACK_PARTIAL	0xF4
-#define KASAN_USE_AFTER_SCOPE	0xF8
 
 /* ASAN ABI version. */
 #if defined(__clang__) && (__clang_major__ - 0 >= 6)
@@ -163,12 +158,43 @@ kasan_init(void)
 	kasan_ctors();
 }
 
-static void
-kasan_report(unsigned long addr, size_t size, bool write, unsigned long pc)
+static inline const char *
+kasan_code_name(uint8_t code)
 {
-	printf("kASan: Unauthorized Access In %p: Addr %p [%zu byte%s, %s]\n",
+	switch (code) {
+	case KASAN_GENERIC_REDZONE:
+		return "GenericRedZone";
+	case KASAN_MALLOC_REDZONE:
+		return "MallocRedZone";
+	case KASAN_KMEM_REDZONE:
+		return "KmemRedZone";
+	case KASAN_POOL_REDZONE:
+		return "PoolRedZone";
+	case KASAN_POOL_FREED:
+		return "PoolUseAfterFree";
+	case 1 ... 7:
+		return "RedZonePartial";
+	case KASAN_STACK_LEFT:
+		return "StackLeft";
+	case KASAN_STACK_RIGHT:
+		return "StackRight";
+	case KASAN_STACK_PARTIAL:
+		return "StackPartial";
+	case KASAN_USE_AFTER_SCOPE:
+		return "UseAfterScope";
+	default:
+		return "Unknown";
+	}
+}
+
+static void
+kasan_report(unsigned long addr, size_t size, bool write, unsigned long pc,
+    uint8_t code)
+{
+	REPORT("ASan: Unauthorized Access In %p: Addr %p [%zu byte%s, %s,"
+	    " %s]\n",
 	    (void *)pc, (void *)addr, size, (size > 1 ? "s" : ""),
-	    (write ? "write" : "read"));
+	    (write ? "write" : "read"), kasan_code_name(code));
 	kasan_md_unwind();
 }
 
@@ -182,7 +208,17 @@ kasan_shadow_1byte_markvalid(unsigned long addr)
 }
 
 static __always_inline void
-kasan_shadow_Nbyte_fill(const void *addr, size_t size, uint8_t val)
+kasan_shadow_Nbyte_markvalid(const void *addr, size_t size)
+{
+	size_t i;
+
+	for (i = 0; i < size; i++) {
+		kasan_shadow_1byte_markvalid((unsigned long)addr+i);
+	}
+}
+
+static __always_inline void
+kasan_shadow_Nbyte_fill(const void *addr, size_t size, uint8_t code)
 {
 	void *shad;
 
@@ -197,7 +233,7 @@ kasan_shadow_Nbyte_fill(const void *addr, size_t size, uint8_t val)
 	shad = (void *)kasan_md_addr_to_shad(addr);
 	size = size >> KASAN_SHADOW_SCALE_SHIFT;
 
-	__builtin_memset(shad, val, size);
+	__builtin_memset(shad, code, size);
 }
 
 void
@@ -205,23 +241,6 @@ kasan_add_redzone(size_t *size)
 {
 	*size = roundup(*size, KASAN_SHADOW_SCALE_SIZE);
 	*size += KASAN_SHADOW_SCALE_SIZE;
-}
-
-static void
-kasan_markmem(const void *addr, size_t size, bool valid)
-{
-	size_t i;
-
-	KASSERT((vaddr_t)addr % KASAN_SHADOW_SCALE_SIZE == 0);
-
-	if (valid) {
-		for (i = 0; i < size; i++) {
-			kasan_shadow_1byte_markvalid((unsigned long)addr+i);
-		}
-	} else {
-		KASSERT(size % KASAN_SHADOW_SCALE_SIZE == 0);
-		kasan_shadow_Nbyte_fill(addr, size, KASAN_MEMORY_REDZONE);
-	}
 }
 
 void
@@ -236,16 +255,38 @@ kasan_softint(struct lwp *l)
  * In an area of size 'sz_with_redz', mark the 'size' first bytes as valid,
  * and the rest as invalid. There are generally two use cases:
  *
- *  o kasan_mark(addr, origsize, size), with origsize < size. This marks the
- *    redzone at the end of the buffer as invalid.
+ *  o kasan_mark(addr, origsize, size, code), with origsize < size. This marks
+ *    the redzone at the end of the buffer as invalid.
  *
- *  o kasan_mark(addr, size, size). This marks the entire buffer as valid.
+ *  o kasan_mark(addr, size, size, 0). This marks the entire buffer as valid.
  */
 void
-kasan_mark(const void *addr, size_t size, size_t sz_with_redz)
+kasan_mark(const void *addr, size_t size, size_t sz_with_redz, uint8_t code)
 {
-	kasan_markmem(addr, sz_with_redz, false);
-	kasan_markmem(addr, size, true);
+	size_t i, n, redz;
+	int8_t *shad;
+
+	KASSERT((vaddr_t)addr % KASAN_SHADOW_SCALE_SIZE == 0);
+	redz = sz_with_redz - roundup(size, KASAN_SHADOW_SCALE_SIZE);
+	KASSERT(redz % KASAN_SHADOW_SCALE_SIZE == 0);
+	shad = kasan_md_addr_to_shad(addr);
+
+	/* Chunks of 8 bytes, valid. */
+	n = size / KASAN_SHADOW_SCALE_SIZE;
+	for (i = 0; i < n; i++) {
+		*shad++ = 0;
+	}
+
+	/* Possibly one chunk, mid. */
+	if ((size & KASAN_SHADOW_MASK) != 0) {
+		*shad++ = (size & KASAN_SHADOW_MASK);
+	}
+
+	/* Chunks of 8 bytes, invalid. */
+	n = redz / KASAN_SHADOW_SCALE_SIZE;
+	for (i = 0; i < n; i++) {
+		*shad++ = code;
+	}
 }
 
 /* -------------------------------------------------------------------------- */
@@ -255,69 +296,85 @@ kasan_mark(const void *addr, size_t size, size_t sz_with_redz)
 	    ((addr + size - 1) >> KASAN_SHADOW_SCALE_SHIFT)
 
 static __always_inline bool
-kasan_shadow_1byte_isvalid(unsigned long addr)
+kasan_shadow_1byte_isvalid(unsigned long addr, uint8_t *code)
 {
 	int8_t *byte = kasan_md_addr_to_shad((void *)addr);
 	int8_t last = (addr & KASAN_SHADOW_MASK) + 1;
 
-	return __predict_true(*byte == 0 || last <= *byte);
+	if (__predict_true(*byte == 0 || last <= *byte)) {
+		return true;
+	}
+	*code = *byte;
+	return false;
 }
 
 static __always_inline bool
-kasan_shadow_2byte_isvalid(unsigned long addr)
+kasan_shadow_2byte_isvalid(unsigned long addr, uint8_t *code)
 {
 	int8_t *byte, last;
 
 	if (ADDR_CROSSES_SCALE_BOUNDARY(addr, 2)) {
-		return (kasan_shadow_1byte_isvalid(addr) &&
-		    kasan_shadow_1byte_isvalid(addr+1));
+		return (kasan_shadow_1byte_isvalid(addr, code) &&
+		    kasan_shadow_1byte_isvalid(addr+1, code));
 	}
 
 	byte = kasan_md_addr_to_shad((void *)addr);
 	last = ((addr + 1) & KASAN_SHADOW_MASK) + 1;
 
-	return __predict_true(*byte == 0 || last <= *byte);
+	if (__predict_true(*byte == 0 || last <= *byte)) {
+		return true;
+	}
+	*code = *byte;
+	return false;
 }
 
 static __always_inline bool
-kasan_shadow_4byte_isvalid(unsigned long addr)
+kasan_shadow_4byte_isvalid(unsigned long addr, uint8_t *code)
 {
 	int8_t *byte, last;
 
 	if (ADDR_CROSSES_SCALE_BOUNDARY(addr, 4)) {
-		return (kasan_shadow_2byte_isvalid(addr) &&
-		    kasan_shadow_2byte_isvalid(addr+2));
+		return (kasan_shadow_2byte_isvalid(addr, code) &&
+		    kasan_shadow_2byte_isvalid(addr+2, code));
 	}
 
 	byte = kasan_md_addr_to_shad((void *)addr);
 	last = ((addr + 3) & KASAN_SHADOW_MASK) + 1;
 
-	return __predict_true(*byte == 0 || last <= *byte);
+	if (__predict_true(*byte == 0 || last <= *byte)) {
+		return true;
+	}
+	*code = *byte;
+	return false;
 }
 
 static __always_inline bool
-kasan_shadow_8byte_isvalid(unsigned long addr)
+kasan_shadow_8byte_isvalid(unsigned long addr, uint8_t *code)
 {
 	int8_t *byte, last;
 
 	if (ADDR_CROSSES_SCALE_BOUNDARY(addr, 8)) {
-		return (kasan_shadow_4byte_isvalid(addr) &&
-		    kasan_shadow_4byte_isvalid(addr+4));
+		return (kasan_shadow_4byte_isvalid(addr, code) &&
+		    kasan_shadow_4byte_isvalid(addr+4, code));
 	}
 
 	byte = kasan_md_addr_to_shad((void *)addr);
 	last = ((addr + 7) & KASAN_SHADOW_MASK) + 1;
 
-	return __predict_true(*byte == 0 || last <= *byte);
+	if (__predict_true(*byte == 0 || last <= *byte)) {
+		return true;
+	}
+	*code = *byte;
+	return false;
 }
 
 static __always_inline bool
-kasan_shadow_Nbyte_isvalid(unsigned long addr, size_t size)
+kasan_shadow_Nbyte_isvalid(unsigned long addr, size_t size, uint8_t *code)
 {
 	size_t i;
 
 	for (i = 0; i < size; i++) {
-		if (!kasan_shadow_1byte_isvalid(addr+i))
+		if (!kasan_shadow_1byte_isvalid(addr+i, code))
 			return false;
 	}
 
@@ -328,6 +385,7 @@ static __always_inline void
 kasan_shadow_check(unsigned long addr, size_t size, bool write,
     unsigned long retaddr)
 {
+	uint8_t code;
 	bool valid;
 
 	if (__predict_false(!kasan_enabled))
@@ -340,27 +398,27 @@ kasan_shadow_check(unsigned long addr, size_t size, bool write,
 	if (__builtin_constant_p(size)) {
 		switch (size) {
 		case 1:
-			valid = kasan_shadow_1byte_isvalid(addr);
+			valid = kasan_shadow_1byte_isvalid(addr, &code);
 			break;
 		case 2:
-			valid = kasan_shadow_2byte_isvalid(addr);
+			valid = kasan_shadow_2byte_isvalid(addr, &code);
 			break;
 		case 4:
-			valid = kasan_shadow_4byte_isvalid(addr);
+			valid = kasan_shadow_4byte_isvalid(addr, &code);
 			break;
 		case 8:
-			valid = kasan_shadow_8byte_isvalid(addr);
+			valid = kasan_shadow_8byte_isvalid(addr, &code);
 			break;
 		default:
-			valid = kasan_shadow_Nbyte_isvalid(addr, size);
+			valid = kasan_shadow_Nbyte_isvalid(addr, size, &code);
 			break;
 		}
 	} else {
-		valid = kasan_shadow_Nbyte_isvalid(addr, size);
+		valid = kasan_shadow_Nbyte_isvalid(addr, size, &code);
 	}
 
 	if (__predict_false(!valid)) {
-		kasan_report(addr, size, write, retaddr);
+		kasan_report(addr, size, write, retaddr, code);
 	}
 }
 
@@ -387,6 +445,14 @@ kasan_memset(void *b, int c, size_t len)
 {
 	kasan_shadow_check((unsigned long)b, len, true, __RET_ADDR);
 	return __builtin_memset(b, c, len);
+}
+
+void *
+kasan_memmove(void *dst, const void *src, size_t len)
+{
+	kasan_shadow_check((unsigned long)src, len, false, __RET_ADDR);
+	kasan_shadow_check((unsigned long)dst, len, true, __RET_ADDR);
+	return __builtin_memmove(dst, src, len);
 }
 
 char *
@@ -438,6 +504,432 @@ kasan_strlen(const char *str)
 	return (s - str);
 }
 
+#undef kcopy
+#undef copystr
+#undef copyinstr
+#undef copyoutstr
+#undef copyin
+
+int	kasan_kcopy(const void *, void *, size_t);
+int	kasan_copystr(const void *, void *, size_t, size_t *);
+int	kasan_copyinstr(const void *, void *, size_t, size_t *);
+int	kasan_copyoutstr(const void *, void *, size_t, size_t *);
+int	kasan_copyin(const void *, void *, size_t);
+int	kcopy(const void *, void *, size_t);
+int	copystr(const void *, void *, size_t, size_t *);
+int	copyinstr(const void *, void *, size_t, size_t *);
+int	copyoutstr(const void *, void *, size_t, size_t *);
+int	copyin(const void *, void *, size_t);
+
+int
+kasan_kcopy(const void *src, void *dst, size_t len)
+{
+	kasan_shadow_check((unsigned long)src, len, false, __RET_ADDR);
+	kasan_shadow_check((unsigned long)dst, len, true, __RET_ADDR);
+	return kcopy(src, dst, len);
+}
+
+int
+kasan_copystr(const void *kfaddr, void *kdaddr, size_t len, size_t *done)
+{
+	kasan_shadow_check((unsigned long)kdaddr, len, true, __RET_ADDR);
+	return copystr(kfaddr, kdaddr, len, done);
+}
+
+int
+kasan_copyin(const void *uaddr, void *kaddr, size_t len)
+{
+	kasan_shadow_check((unsigned long)kaddr, len, true, __RET_ADDR);
+	return copyin(uaddr, kaddr, len);
+}
+
+int
+kasan_copyinstr(const void *uaddr, void *kaddr, size_t len, size_t *done)
+{
+	kasan_shadow_check((unsigned long)kaddr, len, true, __RET_ADDR);
+	return copyinstr(uaddr, kaddr, len, done);
+}
+
+int
+kasan_copyoutstr(const void *kaddr, void *uaddr, size_t len, size_t *done)
+{
+	kasan_shadow_check((unsigned long)kaddr, len, false, __RET_ADDR);
+	return copyoutstr(kaddr, uaddr, len, done);
+}
+
+/* -------------------------------------------------------------------------- */
+
+#undef atomic_add_32
+#undef atomic_add_int
+#undef atomic_add_long
+#undef atomic_add_ptr
+#undef atomic_add_64
+#undef atomic_add_32_nv
+#undef atomic_add_int_nv
+#undef atomic_add_long_nv
+#undef atomic_add_ptr_nv
+#undef atomic_add_64_nv
+#undef atomic_and_32
+#undef atomic_and_uint
+#undef atomic_and_ulong
+#undef atomic_and_64
+#undef atomic_and_32_nv
+#undef atomic_and_uint_nv
+#undef atomic_and_ulong_nv
+#undef atomic_and_64_nv
+#undef atomic_or_32
+#undef atomic_or_uint
+#undef atomic_or_ulong
+#undef atomic_or_64
+#undef atomic_or_32_nv
+#undef atomic_or_uint_nv
+#undef atomic_or_ulong_nv
+#undef atomic_or_64_nv
+#undef atomic_cas_32
+#undef atomic_cas_uint
+#undef atomic_cas_ulong
+#undef atomic_cas_ptr
+#undef atomic_cas_64
+#undef atomic_cas_32_ni
+#undef atomic_cas_uint_ni
+#undef atomic_cas_ulong_ni
+#undef atomic_cas_ptr_ni
+#undef atomic_cas_64_ni
+#undef atomic_swap_32
+#undef atomic_swap_uint
+#undef atomic_swap_ulong
+#undef atomic_swap_ptr
+#undef atomic_swap_64
+#undef atomic_dec_32
+#undef atomic_dec_uint
+#undef atomic_dec_ulong
+#undef atomic_dec_ptr
+#undef atomic_dec_64
+#undef atomic_dec_32_nv
+#undef atomic_dec_uint_nv
+#undef atomic_dec_ulong_nv
+#undef atomic_dec_ptr_nv
+#undef atomic_dec_64_nv
+#undef atomic_inc_32
+#undef atomic_inc_uint
+#undef atomic_inc_ulong
+#undef atomic_inc_ptr
+#undef atomic_inc_64
+#undef atomic_inc_32_nv
+#undef atomic_inc_uint_nv
+#undef atomic_inc_ulong_nv
+#undef atomic_inc_ptr_nv
+#undef atomic_inc_64_nv
+
+#define ASAN_ATOMIC_FUNC_ADD(name, tret, targ1, targ2) \
+	void atomic_add_##name(volatile targ1 *, targ2); \
+	void kasan_atomic_add_##name(volatile targ1 *, targ2); \
+	void kasan_atomic_add_##name(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		atomic_add_##name(ptr, val); \
+	} \
+	tret atomic_add_##name##_nv(volatile targ1 *, targ2); \
+	tret kasan_atomic_add_##name##_nv(volatile targ1 *, targ2); \
+	tret kasan_atomic_add_##name##_nv(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_add_##name##_nv(ptr, val); \
+	}
+
+#define ASAN_ATOMIC_FUNC_AND(name, tret, targ1, targ2) \
+	void atomic_and_##name(volatile targ1 *, targ2); \
+	void kasan_atomic_and_##name(volatile targ1 *, targ2); \
+	void kasan_atomic_and_##name(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		atomic_and_##name(ptr, val); \
+	} \
+	tret atomic_and_##name##_nv(volatile targ1 *, targ2); \
+	tret kasan_atomic_and_##name##_nv(volatile targ1 *, targ2); \
+	tret kasan_atomic_and_##name##_nv(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_and_##name##_nv(ptr, val); \
+	}
+
+#define ASAN_ATOMIC_FUNC_OR(name, tret, targ1, targ2) \
+	void atomic_or_##name(volatile targ1 *, targ2); \
+	void kasan_atomic_or_##name(volatile targ1 *, targ2); \
+	void kasan_atomic_or_##name(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		atomic_or_##name(ptr, val); \
+	} \
+	tret atomic_or_##name##_nv(volatile targ1 *, targ2); \
+	tret kasan_atomic_or_##name##_nv(volatile targ1 *, targ2); \
+	tret kasan_atomic_or_##name##_nv(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_or_##name##_nv(ptr, val); \
+	}
+
+#define ASAN_ATOMIC_FUNC_CAS(name, tret, targ1, targ2) \
+	tret atomic_cas_##name(volatile targ1 *, targ2, targ2); \
+	tret kasan_atomic_cas_##name(volatile targ1 *, targ2, targ2); \
+	tret kasan_atomic_cas_##name(volatile targ1 *ptr, targ2 exp, targ2 new) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_cas_##name(ptr, exp, new); \
+	} \
+	tret atomic_cas_##name##_ni(volatile targ1 *, targ2, targ2); \
+	tret kasan_atomic_cas_##name##_ni(volatile targ1 *, targ2, targ2); \
+	tret kasan_atomic_cas_##name##_ni(volatile targ1 *ptr, targ2 exp, targ2 new) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_cas_##name##_ni(ptr, exp, new); \
+	}
+
+#define ASAN_ATOMIC_FUNC_SWAP(name, tret, targ1, targ2) \
+	tret atomic_swap_##name(volatile targ1 *, targ2); \
+	tret kasan_atomic_swap_##name(volatile targ1 *, targ2); \
+	tret kasan_atomic_swap_##name(volatile targ1 *ptr, targ2 val) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_swap_##name(ptr, val); \
+	}
+
+#define ASAN_ATOMIC_FUNC_DEC(name, tret, targ1) \
+	void atomic_dec_##name(volatile targ1 *); \
+	void kasan_atomic_dec_##name(volatile targ1 *); \
+	void kasan_atomic_dec_##name(volatile targ1 *ptr) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		atomic_dec_##name(ptr); \
+	} \
+	tret atomic_dec_##name##_nv(volatile targ1 *); \
+	tret kasan_atomic_dec_##name##_nv(volatile targ1 *); \
+	tret kasan_atomic_dec_##name##_nv(volatile targ1 *ptr) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_dec_##name##_nv(ptr); \
+	}
+
+#define ASAN_ATOMIC_FUNC_INC(name, tret, targ1) \
+	void atomic_inc_##name(volatile targ1 *); \
+	void kasan_atomic_inc_##name(volatile targ1 *); \
+	void kasan_atomic_inc_##name(volatile targ1 *ptr) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		atomic_inc_##name(ptr); \
+	} \
+	tret atomic_inc_##name##_nv(volatile targ1 *); \
+	tret kasan_atomic_inc_##name##_nv(volatile targ1 *); \
+	tret kasan_atomic_inc_##name##_nv(volatile targ1 *ptr) \
+	{ \
+		kasan_shadow_check((uintptr_t)ptr, sizeof(tret), true, \
+		    __RET_ADDR); \
+		return atomic_inc_##name##_nv(ptr); \
+	}
+
+ASAN_ATOMIC_FUNC_ADD(32, uint32_t, uint32_t, int32_t);
+ASAN_ATOMIC_FUNC_ADD(64, uint64_t, uint64_t, int64_t);
+ASAN_ATOMIC_FUNC_ADD(int, unsigned int, unsigned int, int);
+ASAN_ATOMIC_FUNC_ADD(long, unsigned long, unsigned long, long);
+ASAN_ATOMIC_FUNC_ADD(ptr, void *, void, ssize_t);
+
+ASAN_ATOMIC_FUNC_AND(32, uint32_t, uint32_t, uint32_t);
+ASAN_ATOMIC_FUNC_AND(64, uint64_t, uint64_t, uint64_t);
+ASAN_ATOMIC_FUNC_AND(uint, unsigned int, unsigned int, unsigned int);
+ASAN_ATOMIC_FUNC_AND(ulong, unsigned long, unsigned long, unsigned long);
+
+ASAN_ATOMIC_FUNC_OR(32, uint32_t, uint32_t, uint32_t);
+ASAN_ATOMIC_FUNC_OR(64, uint64_t, uint64_t, uint64_t);
+ASAN_ATOMIC_FUNC_OR(uint, unsigned int, unsigned int, unsigned int);
+ASAN_ATOMIC_FUNC_OR(ulong, unsigned long, unsigned long, unsigned long);
+
+ASAN_ATOMIC_FUNC_CAS(32, uint32_t, uint32_t, uint32_t);
+ASAN_ATOMIC_FUNC_CAS(64, uint64_t, uint64_t, uint64_t);
+ASAN_ATOMIC_FUNC_CAS(uint, unsigned int, unsigned int, unsigned int);
+ASAN_ATOMIC_FUNC_CAS(ulong, unsigned long, unsigned long, unsigned long);
+ASAN_ATOMIC_FUNC_CAS(ptr, void *, void, void *);
+
+ASAN_ATOMIC_FUNC_SWAP(32, uint32_t, uint32_t, uint32_t);
+ASAN_ATOMIC_FUNC_SWAP(64, uint64_t, uint64_t, uint64_t);
+ASAN_ATOMIC_FUNC_SWAP(uint, unsigned int, unsigned int, unsigned int);
+ASAN_ATOMIC_FUNC_SWAP(ulong, unsigned long, unsigned long, unsigned long);
+ASAN_ATOMIC_FUNC_SWAP(ptr, void *, void, void *);
+
+ASAN_ATOMIC_FUNC_DEC(32, uint32_t, uint32_t)
+ASAN_ATOMIC_FUNC_DEC(64, uint64_t, uint64_t)
+ASAN_ATOMIC_FUNC_DEC(uint, unsigned int, unsigned int);
+ASAN_ATOMIC_FUNC_DEC(ulong, unsigned long, unsigned long);
+ASAN_ATOMIC_FUNC_DEC(ptr, void *, void);
+
+ASAN_ATOMIC_FUNC_INC(32, uint32_t, uint32_t)
+ASAN_ATOMIC_FUNC_INC(64, uint64_t, uint64_t)
+ASAN_ATOMIC_FUNC_INC(uint, unsigned int, unsigned int);
+ASAN_ATOMIC_FUNC_INC(ulong, unsigned long, unsigned long);
+ASAN_ATOMIC_FUNC_INC(ptr, void *, void);
+
+/* -------------------------------------------------------------------------- */
+
+#ifdef __HAVE_KASAN_INSTR_BUS
+
+#include <sys/bus.h>
+
+#undef bus_space_read_multi_1
+#undef bus_space_read_multi_2
+#undef bus_space_read_multi_4
+#undef bus_space_read_multi_8
+#undef bus_space_read_multi_stream_1
+#undef bus_space_read_multi_stream_2
+#undef bus_space_read_multi_stream_4
+#undef bus_space_read_multi_stream_8
+#undef bus_space_read_region_1
+#undef bus_space_read_region_2
+#undef bus_space_read_region_4
+#undef bus_space_read_region_8
+#undef bus_space_read_region_stream_1
+#undef bus_space_read_region_stream_2
+#undef bus_space_read_region_stream_4
+#undef bus_space_read_region_stream_8
+#undef bus_space_write_multi_1
+#undef bus_space_write_multi_2
+#undef bus_space_write_multi_4
+#undef bus_space_write_multi_8
+#undef bus_space_write_multi_stream_1
+#undef bus_space_write_multi_stream_2
+#undef bus_space_write_multi_stream_4
+#undef bus_space_write_multi_stream_8
+#undef bus_space_write_region_1
+#undef bus_space_write_region_2
+#undef bus_space_write_region_4
+#undef bus_space_write_region_8
+#undef bus_space_write_region_stream_1
+#undef bus_space_write_region_stream_2
+#undef bus_space_write_region_stream_4
+#undef bus_space_write_region_stream_8
+
+#define ASAN_BUS_READ_FUNC(bytes, bits) \
+	void bus_space_read_multi_##bytes(bus_space_tag_t, bus_space_handle_t,	\
+	    bus_size_t, uint##bits##_t *, bus_size_t);				\
+	void kasan_bus_space_read_multi_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, uint##bits##_t *, bus_size_t);	\
+	void kasan_bus_space_read_multi_##bytes(bus_space_tag_t tag,		\
+	    bus_space_handle_t hnd, bus_size_t size, uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, false, __RET_ADDR);		\
+		bus_space_read_multi_##bytes(tag, hnd, size, buf, count);	\
+	}									\
+	void bus_space_read_multi_stream_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, uint##bits##_t *, bus_size_t);	\
+	void kasan_bus_space_read_multi_stream_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, uint##bits##_t *, bus_size_t);	\
+	void kasan_bus_space_read_multi_stream_##bytes(bus_space_tag_t tag,	\
+	    bus_space_handle_t hnd, bus_size_t size, uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, false, __RET_ADDR);		\
+		bus_space_read_multi_stream_##bytes(tag, hnd, size, buf, count);\
+	}									\
+	void bus_space_read_region_##bytes(bus_space_tag_t, bus_space_handle_t,	\
+	    bus_size_t, uint##bits##_t *, bus_size_t);				\
+	void kasan_bus_space_read_region_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, uint##bits##_t *, bus_size_t);	\
+	void kasan_bus_space_read_region_##bytes(bus_space_tag_t tag,		\
+	    bus_space_handle_t hnd, bus_size_t size, uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, false, __RET_ADDR);		\
+		bus_space_read_region_##bytes(tag, hnd, size, buf, count);	\
+	}									\
+	void bus_space_read_region_stream_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, uint##bits##_t *, bus_size_t);	\
+	void kasan_bus_space_read_region_stream_##bytes(bus_space_tag_t,	\
+	    bus_space_handle_t, bus_size_t, uint##bits##_t *, bus_size_t);	\
+	void kasan_bus_space_read_region_stream_##bytes(bus_space_tag_t tag,	\
+	    bus_space_handle_t hnd, bus_size_t size, uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, false, __RET_ADDR);		\
+		bus_space_read_region_stream_##bytes(tag, hnd, size, buf, count);\
+	}
+
+#define ASAN_BUS_WRITE_FUNC(bytes, bits) \
+	void bus_space_write_multi_##bytes(bus_space_tag_t, bus_space_handle_t,	\
+	    bus_size_t, const uint##bits##_t *, bus_size_t);			\
+	void kasan_bus_space_write_multi_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, const uint##bits##_t *, bus_size_t);\
+	void kasan_bus_space_write_multi_##bytes(bus_space_tag_t tag,		\
+	    bus_space_handle_t hnd, bus_size_t size, const uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, true, __RET_ADDR);		\
+		bus_space_write_multi_##bytes(tag, hnd, size, buf, count);	\
+	}									\
+	void bus_space_write_multi_stream_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, const uint##bits##_t *, bus_size_t);\
+	void kasan_bus_space_write_multi_stream_##bytes(bus_space_tag_t,	\
+	    bus_space_handle_t, bus_size_t, const uint##bits##_t *, bus_size_t);\
+	void kasan_bus_space_write_multi_stream_##bytes(bus_space_tag_t tag,	\
+	    bus_space_handle_t hnd, bus_size_t size, const uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, true, __RET_ADDR);		\
+		bus_space_write_multi_stream_##bytes(tag, hnd, size, buf, count);\
+	}									\
+	void bus_space_write_region_##bytes(bus_space_tag_t, bus_space_handle_t,\
+	    bus_size_t, const uint##bits##_t *, bus_size_t);			\
+	void kasan_bus_space_write_region_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, const uint##bits##_t *, bus_size_t);\
+	void kasan_bus_space_write_region_##bytes(bus_space_tag_t tag,		\
+	    bus_space_handle_t hnd, bus_size_t size, const uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, true, __RET_ADDR);		\
+		bus_space_write_region_##bytes(tag, hnd, size, buf, count);	\
+	}									\
+	void bus_space_write_region_stream_##bytes(bus_space_tag_t,		\
+	    bus_space_handle_t, bus_size_t, const uint##bits##_t *, bus_size_t);\
+	void kasan_bus_space_write_region_stream_##bytes(bus_space_tag_t,	\
+	    bus_space_handle_t, bus_size_t, const uint##bits##_t *, bus_size_t);\
+	void kasan_bus_space_write_region_stream_##bytes(bus_space_tag_t tag,	\
+	    bus_space_handle_t hnd, bus_size_t size, const uint##bits##_t *buf,	\
+	    bus_size_t count)							\
+	{									\
+		kasan_shadow_check((uintptr_t)buf,				\
+		    sizeof(uint##bits##_t) * count, true, __RET_ADDR);		\
+		bus_space_write_region_stream_##bytes(tag, hnd, size, buf, count);\
+	}
+
+ASAN_BUS_READ_FUNC(1, 8)
+ASAN_BUS_READ_FUNC(2, 16)
+ASAN_BUS_READ_FUNC(4, 32)
+ASAN_BUS_READ_FUNC(8, 64)
+
+ASAN_BUS_WRITE_FUNC(1, 8)
+ASAN_BUS_WRITE_FUNC(2, 16)
+ASAN_BUS_WRITE_FUNC(4, 32)
+ASAN_BUS_WRITE_FUNC(8, 64)
+
+#endif /* __HAVE_KASAN_INSTR_BUS */
+
 /* -------------------------------------------------------------------------- */
 
 void __asan_register_globals(struct __asan_global *, size_t);
@@ -450,7 +942,7 @@ __asan_register_globals(struct __asan_global *globals, size_t n)
 
 	for (i = 0; i < n; i++) {
 		kasan_mark(globals[i].beg, globals[i].size,
-		    globals[i].size_with_redzone);
+		    globals[i].size_with_redzone, KASAN_GENERIC_REDZONE);
 	}
 }
 
@@ -537,3 +1029,17 @@ ASAN_SET_SHADOW(f2);
 ASAN_SET_SHADOW(f3);
 ASAN_SET_SHADOW(f5);
 ASAN_SET_SHADOW(f8);
+
+void __asan_poison_stack_memory(const void *, size_t);
+void __asan_unpoison_stack_memory(const void *, size_t);
+
+void __asan_poison_stack_memory(const void *addr, size_t size)
+{
+	size = roundup(size, KASAN_SHADOW_SCALE_SIZE);
+	kasan_shadow_Nbyte_fill(addr, size, KASAN_USE_AFTER_SCOPE);
+}
+
+void __asan_unpoison_stack_memory(const void *addr, size_t size)
+{
+	kasan_shadow_Nbyte_markvalid(addr, size);
+}

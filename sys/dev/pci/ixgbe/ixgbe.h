@@ -1,4 +1,4 @@
-/* $NetBSD: ixgbe.h,v 1.53 2018/12/06 13:25:02 msaitoh Exp $ */
+/* $NetBSD: ixgbe.h,v 1.58 2019/09/13 07:55:07 msaitoh Exp $ */
 
 /******************************************************************************
   SPDX-License-Identifier: BSD-3-Clause
@@ -240,7 +240,7 @@
 #endif
 
 /*
- * Interrupt Moderation parameters 
+ * Interrupt Moderation parameters
  */
 #define IXGBE_LOW_LATENCY	128
 #define IXGBE_AVE_LATENCY	400
@@ -348,7 +348,7 @@ struct ix_queue {
  * The transmit ring, one per queue
  */
 struct tx_ring {
-        struct adapter		*adapter;
+	struct adapter		*adapter;
 	kmutex_t		tx_mtx;
 	u32			me;
 	u32			tail;
@@ -396,7 +396,7 @@ struct tx_ring {
  * The Receive ring, one per rx queue
  */
 struct rx_ring {
-        struct adapter		*adapter;
+	struct adapter		*adapter;
 	kmutex_t		rx_mtx;
 	u32			me;
 	u32			tail;
@@ -408,8 +408,8 @@ struct rx_ring {
 	bool			lro_enabled;
 	bool			hw_rsc;
 	bool			vtag_strip;
-        u16			next_to_refresh;
-        u16 			next_to_check;
+	u16			next_to_refresh;
+	u16 			next_to_check;
 	u16			num_desc;
 	u16			mbuf_sz;
 #if 0
@@ -435,8 +435,6 @@ struct rx_ring {
 	/* Flow Director */
 	u64			flm;
 };
-
-#define IXGBE_MAX_VF_MC 30  /* Max number of multicast entries */
 
 struct ixgbe_vf {
 	u_int    pool;
@@ -475,7 +473,8 @@ struct adapter {
 
 	struct ifmedia		media;
 	callout_t		timer;
-	int			if_flags;
+	u_short			if_flags;	/* saved ifp->if_flags */
+	int			ec_capenable;	/* saved ec->ec_capenable */
 
 	kmutex_t		core_mtx;
 
@@ -492,7 +491,7 @@ struct adapter {
 	/* Info about the interface */
 	int			advertise;  /* link speeds */
 	bool			enable_aim; /* adaptive interrupt moderation */
-	bool			link_active;
+	int			link_active; /* Use LINK_STATE_* value */
 	u16			max_frame_size;
 	u16			num_segs;
 	u32			link_speed;
@@ -678,11 +677,11 @@ struct adapter {
 	"\nControl advertised link speed using these flags:\n" \
 	"\t0x01 - advertise 100M\n" \
 	"\t0x02 - advertise 1G\n" \
-        "\t0x04 - advertise 10G\n" \
-        "\t0x08 - advertise 10M\n" \
-        "\t0x10 - advertise 2.5G\n" \
-        "\t0x20 - advertise 5G\n\n" \
-        "\t5G, 2.5G, 100M and 10M are only supported on certain adapters."
+	"\t0x04 - advertise 10G\n" \
+	"\t0x08 - advertise 10M\n" \
+	"\t0x10 - advertise 2.5G\n" \
+	"\t0x20 - advertise 5G\n\n" \
+	"\t5G, 2.5G, 100M and 10M are only supported on certain adapters."
 
 #define IXGBE_SYSCTL_DESC_SET_FC \
 	"\nSet flow control mode using these values:\n" \

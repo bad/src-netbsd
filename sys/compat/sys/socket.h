@@ -1,4 +1,4 @@
-/*	$NetBSD: socket.h,v 1.16 2018/12/19 13:57:52 maxv Exp $	*/
+/*	$NetBSD: socket.h,v 1.19 2019/09/26 01:29:00 christos Exp $	*/
 
 /*
  * Copyright (c) 1982, 1985, 1986, 1988, 1993, 1994
@@ -46,10 +46,6 @@
 #define COMPAT_OSOCK
 #endif
 
-#ifdef COMPAT_70
-#define COMPAT_SOCKCRED70
-#endif
-
 #else
 #define COMPAT_OSOCK
 #endif
@@ -71,7 +67,7 @@ struct omsghdr {
 	struct iovec	*msg_iov;	/* scatter/gather array */
 	int		msg_iovlen;	/* # elements in msg_iov */
 	void *		msg_accrights;	/* access rights sent/received */
-	int		msg_accrightslen;
+	u_int		msg_accrightslen;
 };
 
 /*
@@ -105,6 +101,9 @@ int compat_ifioctl(struct socket *, u_long, u_long, void *, struct lwp *);
 int compat43_set_accrights(struct msghdr *, void *, int);
 
 struct mbuf * compat_70_unp_addsockcred(struct lwp *, struct mbuf *);
+
+void uipc_usrreq_70_init(void);
+void uipc_usrreq_70_fini(void);
 __END_DECLS
 #else
 int	__socket30(int, int, int);

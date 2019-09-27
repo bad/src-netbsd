@@ -1,4 +1,4 @@
-/*	$NetBSD: locore.S,v 1.32 2018/12/13 10:44:25 ryo Exp $	*/
+/*	$NetBSD: locore.S,v 1.40 2019/09/08 12:17:23 jmcneill Exp $	*/
 
 /*
  * Copyright (c) 2017 Ryo Shimizu <ryo@nerv.org>
@@ -27,7 +27,6 @@
  */
 
 #include "opt_arm_debug.h"
-#include "opt_compat_netbsd32.h"
 #include "opt_console.h"
 #include "opt_cpuoptions.h"
 #include "opt_ddb.h"
@@ -39,7 +38,7 @@
 #include <aarch64/hypervisor.h>
 #include "assym.h"
 
-RCSID("$NetBSD: locore.S,v 1.32 2018/12/13 10:44:25 ryo Exp $")
+RCSID("$NetBSD: locore.S,v 1.40 2019/09/08 12:17:23 jmcneill Exp $")
 
 
 /*#define DEBUG_LOCORE			/* debug print */
@@ -364,7 +363,7 @@ ENTRY_NP(cpu_mpstart)
 	add	x1, x1, #1
 	cmp	x1, MAXCPUS		/* cpuindex >= MAXCPUS ? */
 	bge	toomanycpus
-	ldr	x2, [x0, x1, lsl #3]	/* cpu_mpidr[cpunidex] */
+	ldr	x2, [x0, x1, lsl #3]	/* cpu_mpidr[cpuindex] */
 	cmp	x2, x3			/* == mpidr_el1 & MPIDR_AFF ? */
 	bne	1b
 
@@ -547,7 +546,6 @@ ENTRY_NP(uartputs)
 	ldp	x19, lr, [sp], #16
 	ret
 END(uartputs)
-
 
 /*
  * print x0 in 16 widths hexadecimal.
@@ -768,6 +766,7 @@ init_mmutable:
 	adr	x6, bootpage_alloc		/* allocator */
 	mov	x5, xzr				/* flags = 0 */
 	mov	x4, #LX_BLKPAG_ATTR_DEVICE_MEM|LX_BLKPAG_AP_RW	/* attr */
+	orr	x4, x4, #LX_BLKPAG_UXN|LX_BLKPAG_PXN
 	mov	x3, #L2_SIZE			/* blocksize */
 	mov	x2, #L2_SIZE			/* size */
 	ldr	x1, =CONSADDR			/* pa */
@@ -781,6 +780,7 @@ init_mmutable:
 	adr	x6, bootpage_alloc		/* allocator */
 	mov	x5, xzr				/* flags = 0 */
 	mov	x4, #LX_BLKPAG_ATTR_DEVICE_MEM|LX_BLKPAG_AP_RW	/* attr */
+	orr	x4, x4, #LX_BLKPAG_UXN|LX_BLKPAG_PXN
 	mov	x3, #L2_SIZE			/* blocksize */
 	mov	x2, #(1024*1024*1024*4)		/* size */
 	mov	x1, xzr				/* pa */
@@ -828,10 +828,10 @@ init_mmutable:
 	mov	x4, #LX_BLKPAG_ATTR_NORMAL_WB|LX_BLKPAG_AP_RW	/* attr */
 	orr	x4, x4, #LX_BLKPAG_UXN
 	mov	x3, #L2_SIZE			/* blocksize */
-	adr	x1, start			/* va = start */
+	adr	x1, start			/* pa = start */
 	ADDR	x2, _end
 	sub	x2, x2, x1			/* size = _end - start */
-	mov	x0, #VM_MIN_KERNEL_ADDRESS	/* va */
+	ldr	x0, =start			/* va */
 	bl	pmapboot_enter
 	cbnz	x0, init_mmutable_error
 
@@ -978,7 +978,7 @@ tcr_setting:
 
 
 sctlr_ee:
-	.quad (SCTLR_EE | SCTLR_EOE)	/* Endiannes of Exception and EL0 */
+	.quad (SCTLR_EE | SCTLR_EOE)	/* Endianness of Exception and EL0 */
 sctlr_set:
 	.quad ( \
 	    SCTLR_LSMAOE |  /* Load/Store Multiple Atomicity and Ordering */ \

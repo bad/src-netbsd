@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_proc.c,v 1.224 2018/12/10 14:46:24 maxv Exp $	*/
+/*	$NetBSD: kern_proc.c,v 1.234 2019/08/02 22:46:44 kamil Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -62,7 +62,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_proc.c,v 1.224 2018/12/10 14:46:24 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_proc.c,v 1.234 2019/08/02 22:46:44 kamil Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_kstack.h"
@@ -105,13 +105,10 @@ __KERNEL_RCSID(0, "$NetBSD: kern_proc.c,v 1.224 2018/12/10 14:46:24 maxv Exp $")
 #include <sys/sysctl.h>
 #include <sys/exec.h>
 #include <sys/cpu.h>
+#include <sys/compat_stub.h>
 
 #include <uvm/uvm_extern.h>
 #include <uvm/uvm.h>
-
-#ifdef COMPAT_NETBSD32
-#include <compat/netbsd32/netbsd32.h>
-#endif
 
 /*
  * Process lists.
@@ -249,6 +246,7 @@ static kauth_listener_t proc_listener;
 
 static void fill_proc(const struct proc *, struct proc *, bool);
 static int fill_pathname(struct lwp *, pid_t, void *, size_t *);
+static int fill_cwd(struct lwp *, pid_t, void *, size_t *);
 
 static int
 proc_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
@@ -1821,6 +1819,8 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 
 		if (buflen >= elem_size &&
 		    (type == KERN_PROC || elem_count > 0)) {
+			ruspace(p);	/* Update process vm resource use */
+
 			if (type == KERN_PROC) {
 				fill_proc(p, &kbuf->kproc.kp_proc, allowaddr);
 				fill_eproc(p, &kbuf->kproc.kp_eproc, zombie,
@@ -1898,22 +1898,16 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 int
 copyin_psstrings(struct proc *p, struct ps_strings *arginfo)
 {
+#if !defined(_RUMPKERNEL)
+	int retval;
 
-#ifdef COMPAT_NETBSD32
 	if (p->p_flag & PK_32) {
-		struct ps_strings32 arginfo32;
-
-		int error = copyin_proc(p, (void *)p->p_psstrp, &arginfo32,
-		    sizeof(arginfo32));
-		if (error)
-			return error;
-		arginfo->ps_argvstr = (void *)(uintptr_t)arginfo32.ps_argvstr;
-		arginfo->ps_nargvstr = arginfo32.ps_nargvstr;
-		arginfo->ps_envstr = (void *)(uintptr_t)arginfo32.ps_envstr;
-		arginfo->ps_nenvstr = arginfo32.ps_nenvstr;
-		return 0;
+		MODULE_HOOK_CALL(kern_proc32_copyin_hook, (p, arginfo),
+		    enosys(), retval);
+		return retval;
 	}
-#endif
+#endif /* !defined(_RUMPKERNEL) */
+
 	return copyin_proc(p, (void *)p->p_psstrp, arginfo, sizeof(*arginfo));
 }
 
@@ -1951,6 +1945,12 @@ sysctl_kern_proc_args(SYSCTLFN_ARGS)
 	case KERN_PROC_PATHNAME:
 		sysctl_unlock();
 		error = fill_pathname(l, pid, oldp, oldlenp);
+		sysctl_relock();
+		return error;
+
+	case KERN_PROC_CWD:
+		sysctl_unlock();
+		error = fill_cwd(l, pid, oldp, oldlenp);
 		sysctl_relock();
 		return error;
 
@@ -2122,14 +2122,12 @@ copy_procargs(struct proc *p, int oid, size_t *limit,
 			i = 0;
 		}
 
-#ifdef COMPAT_NETBSD32
-		if (p->p_flag & PK_32) {
-			netbsd32_charp *argv32;
-
-			argv32 = (netbsd32_charp *)argv;
-			base = (vaddr_t)NETBSD32PTR64(argv32[i++]);
-		} else
-#endif
+#if !defined(_RUMPKERNEL)
+		if (p->p_flag & PK_32)
+			MODULE_HOOK_CALL(kern_proc32_base_hook,
+			    (argv, i++), 0, base);
+		else
+#endif /* !defined(_RUMPKERNEL) */
 			base = (vaddr_t)argv[i++];
 		loaded -= entry_len;
 
@@ -2270,7 +2268,7 @@ fill_proc(const struct proc *psrc, struct proc *p, bool allowaddr)
 	p->p_vfpid_done = psrc->p_vfpid_done;
 	p->p_lwp_created = psrc->p_lwp_created;
 	p->p_lwp_exited = psrc->p_lwp_exited;
-	p->p_nsems = psrc->p_nsems;
+	p->p_pspid = psrc->p_pspid;
 	COND_SET_VALUE(p->p_path, psrc->p_path, allowaddr);
 	COND_SET_VALUE(p->p_sigctx, psrc->p_sigctx, allowaddr);
 	p->p_nice = psrc->p_nice;
@@ -2586,6 +2584,53 @@ fill_pathname(struct lwp *l, pid_t pid, void *oldp, size_t *oldlenp)
 	*oldlenp = len;
 	if (pid != -1)
 		mutex_exit(p->p_lock);
+	return error;
+}
+
+static int
+fill_cwd(struct lwp *l, pid_t pid, void *oldp, size_t *oldlenp)
+{
+	int error;
+	struct proc *p;
+	char *path;
+	char *bp, *bend;
+	struct cwdinfo *cwdi;
+	struct vnode *vp;
+	size_t len, lenused;
+
+	if ((error = proc_find_locked(l, &p, pid)) != 0)
+		return error;
+
+	len = MAXPATHLEN * 4;
+
+	path = kmem_alloc(len, KM_SLEEP);
+
+	bp = &path[len];
+	bend = bp;
+	*(--bp) = '\0';
+
+	cwdi = p->p_cwdi;
+	rw_enter(&cwdi->cwdi_lock, RW_READER);
+	vp = cwdi->cwdi_cdir;
+	error = getcwd_common(vp, NULL, &bp, path, len/2, 0, l);
+	rw_exit(&cwdi->cwdi_lock);
+
+	if (error)
+		goto out;
+
+	lenused = bend - bp;
+
+	if (oldp != NULL) {
+		size_t copylen = uimin(lenused, *oldlenp);
+		error = sysctl_copyout(l, bp, oldp, copylen);
+		if (error == 0 && *oldlenp < lenused)
+			error = ENOSPC;
+	}
+	*oldlenp = lenused;
+out:
+	if (pid != -1)
+		mutex_exit(p->p_lock);
+	kmem_free(path, len);
 	return error;
 }
 

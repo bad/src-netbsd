@@ -1,4 +1,4 @@
-/*	$NetBSD: if.c,v 1.443 2018/12/21 08:58:08 msaitoh Exp $	*/
+/*	$NetBSD: if.c,v 1.462 2019/09/25 09:53:37 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001, 2008 The NetBSD Foundation, Inc.
@@ -90,7 +90,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if.c,v 1.443 2018/12/21 08:58:08 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if.c,v 1.462 2019/09/25 09:53:37 ozaki-r Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_inet.h"
@@ -119,6 +119,8 @@ __KERNEL_RCSID(0, "$NetBSD: if.c,v 1.443 2018/12/21 08:58:08 msaitoh Exp $");
 #include <sys/xcall.h>
 #include <sys/cpu.h>
 #include <sys/intr.h>
+#include <sys/module_hook.h>
+#include <sys/compat_stub.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -160,7 +162,6 @@ __KERNEL_RCSID(0, "$NetBSD: if.c,v 1.443 2018/12/21 08:58:08 msaitoh Exp $");
 #endif
 
 #include <compat/sys/sockio.h>
-#include <compat/sys/socket.h>
 
 MALLOC_DEFINE(M_IFADDR, "ifaddr", "interface address");
 MALLOC_DEFINE(M_IFMADDR, "ether_multi", "link-level multicast address");
@@ -243,14 +244,12 @@ static void if_deferred_start_destroy(struct ifnet *);
 static void sysctl_net_pktq_setup(struct sysctllog **, int);
 #endif
 
-static void if_sysctl_setup(struct sysctllog **);
+/*
+ * Hook for if_vlan - needed by if_agr
+ */
+struct if_vlan_vlan_input_hook_t if_vlan_vlan_input_hook;
 
-/* Compatibility vector functions */
-u_long (*vec_compat_cvtcmd)(u_long) = NULL;
-int (*vec_compat_ifioctl)(struct socket *, u_long, u_long, void *,
-	struct lwp *) = NULL;
-int (*vec_compat_ifconf)(struct lwp *, u_long, void *) = (void *)enosys;
-int (*vec_compat_ifdatareq)(struct lwp *, u_long, void *) = (void *)enosys;
+static void if_sysctl_setup(struct sysctllog **);
 
 static int
 if_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
@@ -453,7 +452,7 @@ if_dl_create(const struct ifnet *ifp, const struct sockaddr_dl **sdlp)
 	addrlen = ifp->if_addrlen;
 	socksize = roundup(sockaddr_dl_measure(namelen, addrlen), sizeof(long));
 	ifasize = sizeof(*ifa) + 2 * socksize;
-	ifa = malloc(ifasize, M_IFADDR, M_WAITOK|M_ZERO);
+	ifa = malloc(ifasize, M_IFADDR, M_WAITOK | M_ZERO);
 
 	sdl = (struct sockaddr_dl *)(ifa + 1);
 	mask = (struct sockaddr_dl *)(socksize + (char *)sdl);
@@ -658,7 +657,7 @@ skip:
 		/* grow ifindex2ifnet */
 		m = oldlim * sizeof(struct ifnet *);
 		n = if_indexlim * sizeof(struct ifnet *);
-		q = malloc(n, M_IFADDR, M_WAITOK|M_ZERO);
+		q = malloc(n, M_IFADDR, M_WAITOK | M_ZERO);
 		if (ifindex2ifnet != NULL) {
 			memcpy(q, ifindex2ifnet, m);
 			free(ifindex2ifnet, M_IFADDR);
@@ -986,7 +985,7 @@ sysctl_percpuq_setup(struct sysctllog **clog, const char* ifname,
 		goto bad;
 
 	if (sysctl_createv(clog, 0, &rnode, &cnode,
-		       CTLFLAG_PERMANENT|CTLFLAG_READWRITE,
+		       CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
 		       CTLTYPE_INT, "maxlen",
 		       SYSCTL_DESCR("Maximum allowed input queue length"),
 		       sysctl_percpuq_maxlen_handler, 0, (void *)ipq, 0,
@@ -1044,9 +1043,9 @@ static inline bool
 if_snd_is_used(struct ifnet *ifp)
 {
 
-	return ifp->if_transmit == NULL || ifp->if_transmit == if_nulltransmit ||
-	    ifp->if_transmit == if_transmit ||
-	    ALTQ_IS_ENABLED(&ifp->if_snd);
+	return ALTQ_IS_ENABLED(&ifp->if_snd) ||
+		ifp->if_transmit == if_transmit ||
+		ifp->if_transmit == NULL || ifp->if_transmit == if_nulltransmit;
 }
 
 /*
@@ -1612,6 +1611,8 @@ if_clone_destroy(const char *name)
 	struct if_clone *ifc;
 	struct ifnet *ifp;
 	struct psref psref;
+	int error;
+	int (*if_ioctl)(struct ifnet *, u_long, void *);
 
 	KASSERT(mutex_owned(&if_clone_mtx));
 
@@ -1628,6 +1629,7 @@ if_clone_destroy(const char *name)
 
 	/* We have to disable ioctls here */
 	IFNET_LOCK(ifp);
+	if_ioctl = ifp->if_ioctl;
 	ifp->if_ioctl = if_nullioctl;
 	IFNET_UNLOCK(ifp);
 
@@ -1637,14 +1639,23 @@ if_clone_destroy(const char *name)
 	 */
 	if_put(ifp, &psref);
 
-	return (*ifc->ifc_destroy)(ifp);
+	error = (*ifc->ifc_destroy)(ifp);
+
+	if (error != 0) {
+		/* We have to restore if_ioctl on error */
+		IFNET_LOCK(ifp);
+		ifp->if_ioctl = if_ioctl;
+		IFNET_UNLOCK(ifp);
+	}
+
+	return error;
 }
 
 static bool
 if_is_unit(const char *name)
 {
 
-	while(*name != '\0') {
+	while (*name != '\0') {
 		if (*name < '0' || *name > '9')
 			return false;
 		name++;
@@ -1796,7 +1807,7 @@ void
 ifafree(struct ifaddr *ifa)
 {
 	KASSERT(ifa != NULL);
-	KASSERT(ifa->ifa_refcnt > 0);
+	KASSERTMSG(ifa->ifa_refcnt > 0, "ifa_refcnt=%d", ifa->ifa_refcnt);
 
 	if (atomic_dec_uint_nv(&ifa->ifa_refcnt) == 0) {
 		free(ifa, M_IFADDR);
@@ -1864,6 +1875,7 @@ void
 ifa_acquire(struct ifaddr *ifa, struct psref *psref)
 {
 
+	PSREF_DEBUG_FILL_RETURN_ADDRESS(psref);
 	psref_acquire(psref, &ifa->ifa_psref, ifa_psref_class);
 }
 
@@ -2628,7 +2640,7 @@ int
 ifpromisc_locked(struct ifnet *ifp, int pswitch)
 {
 	int pcount, ret = 0;
-	short nflags;
+	u_short nflags;
 
 	KASSERT(IFNET_LOCKED(ifp));
 
@@ -2740,6 +2752,7 @@ if_get(const char *name, struct psref *psref)
 		if (if_is_deactivated(ifp))
 			continue;
 		if (strcmp(ifp->if_xname, name) == 0) {
+			PSREF_DEBUG_FILL_RETURN_ADDRESS(psref);
 			psref_acquire(psref, &ifp->if_psref,
 			    ifnet_psref_class);
 			goto out;
@@ -2803,8 +2816,10 @@ if_get_byindex(u_int idx, struct psref *psref)
 
 	s = pserialize_read_enter();
 	ifp = if_byindex(idx);
-	if (__predict_true(ifp != NULL))
+	if (__predict_true(ifp != NULL)) {
+		PSREF_DEBUG_FILL_RETURN_ADDRESS(psref);
 		psref_acquire(psref, &ifp->if_psref, ifnet_psref_class);
+	}
 	pserialize_read_exit(s);
 
 	return ifp;
@@ -2891,6 +2906,63 @@ if_tunnel_check_nesting(struct ifnet *ifp, struct mbuf *m, int limit)
 	return 0;
 }
 
+static void
+if_tunnel_ro_init_pc(void *p, void *arg __unused, struct cpu_info *ci __unused)
+{
+	struct tunnel_ro *tro = p;
+
+	tro->tr_ro = kmem_zalloc(sizeof(*tro->tr_ro), KM_SLEEP);
+	tro->tr_lock = mutex_obj_alloc(MUTEX_DEFAULT, IPL_NONE);
+}
+
+percpu_t *
+if_tunnel_alloc_ro_percpu(void)
+{
+	percpu_t *ro_percpu;
+
+	ro_percpu = percpu_alloc(sizeof(struct tunnel_ro));
+	percpu_foreach(ro_percpu, if_tunnel_ro_init_pc, NULL);
+
+	return ro_percpu;
+}
+
+static void
+if_tunnel_ro_fini_pc(void *p, void *arg __unused, struct cpu_info *ci __unused)
+{
+	struct tunnel_ro *tro = p;
+
+	rtcache_free(tro->tr_ro);
+	kmem_free(tro->tr_ro, sizeof(*tro->tr_ro));
+
+	mutex_obj_free(tro->tr_lock);
+}
+
+void
+if_tunnel_free_ro_percpu(percpu_t *ro_percpu)
+{
+
+	percpu_foreach(ro_percpu, if_tunnel_ro_fini_pc, NULL);
+	percpu_free(ro_percpu, sizeof(struct tunnel_ro));
+}
+
+
+static void
+if_tunnel_rtcache_free_pc(void *p, void *arg __unused, struct cpu_info *ci __unused)
+{
+	struct tunnel_ro *tro = p;
+
+	mutex_enter(tro->tr_lock);
+	rtcache_free(tro->tr_ro);
+	mutex_exit(tro->tr_lock);
+}
+
+void if_tunnel_ro_percpu_rtcache_free(percpu_t *ro_percpu)
+{
+
+	percpu_foreach(ro_percpu, if_tunnel_rtcache_free_pc, NULL);
+}
+
+
 /* common */
 int
 ifioctl_common(struct ifnet *ifp, u_long cmd, void *data)
@@ -2899,6 +2971,7 @@ ifioctl_common(struct ifnet *ifp, u_long cmd, void *data)
 	struct ifreq *ifr;
 	struct ifcapreq *ifcr;
 	struct ifdatareq *ifdr;
+	unsigned short flags;
 
 	switch (cmd) {
 	case SIOCSIFCAP:
@@ -2970,8 +3043,13 @@ ifioctl_common(struct ifnet *ifp, u_long cmd, void *data)
 			splx(s);
 		}
 		KERNEL_UNLOCK_IF_IFP_MPSAFE(ifp);
-		ifp->if_flags = (ifp->if_flags & IFF_CANTCHANGE) |
-			(ifr->ifr_flags &~ IFF_CANTCHANGE);
+		flags = (ifp->if_flags & IFF_CANTCHANGE) |
+		    (ifr->ifr_flags &~ IFF_CANTCHANGE);
+		if (ifp->if_flags != flags) {
+			ifp->if_flags = flags;
+			/* Notify that the flags have changed. */
+			rt_ifmsg(ifp);
+		}
 		break;
 	case SIOCGIFFLAGS:
 		ifr = data;
@@ -3047,6 +3125,58 @@ ifioctl_common(struct ifnet *ifp, u_long cmd, void *data)
 		KERNEL_UNLOCK_UNLESS_NET_MPSAFE();
 #endif
 		return ENETRESET;
+	case SIOCSIFDESCR:
+		{
+			char *descrbuf;
+
+ 			ifr = data;
+
+ 			if (ifr->ifr_buflen > IFDESCRSIZE)
+				return ENAMETOOLONG;
+
+ 			if (ifr->ifr_buf == NULL || ifr->ifr_buflen == 0) {
+				/* unset description */
+				descrbuf = NULL;
+			} else {
+				int error;
+
+ 				descrbuf = kmem_zalloc(IFDESCRSIZE, KM_SLEEP);
+				/* copy (IFDESCRSIZE - 1) bytes to ensure terminating nul */
+				error = copyin(ifr->ifr_buf, descrbuf, IFDESCRSIZE - 1);
+				if (error) {
+					kmem_free(descrbuf, IFDESCRSIZE);
+					return error;
+				}
+			}
+
+ 			if (ifp->if_description != NULL)
+				kmem_free(ifp->if_description, IFDESCRSIZE);
+
+ 			ifp->if_description = descrbuf;
+		}
+		break;
+
+ 	case SIOCGIFDESCR:
+		{
+			char *descr;
+
+ 			ifr = data;
+			descr = ifp->if_description;
+
+ 			if (descr == NULL)
+				return ENOMSG;
+
+ 			if (ifr->ifr_buflen < IFDESCRSIZE)
+				return EINVAL;
+			else {
+				int error;
+				error = copyout(descr, ifr->ifr_buf, IFDESCRSIZE);
+				if (error)
+					return error;
+			}
+		}
+ 		break;
+
 	default:
 		return ENOTTY;
 	}
@@ -3132,17 +3262,15 @@ doifioctl(struct socket *so, u_long cmd, void *data, struct lwp *l)
 	struct ifnet *ifp;
 	struct ifreq *ifr;
 	int error = 0;
-#if defined(COMPAT_OSOCK) || defined(COMPAT_OIFREQ)
 	u_long ocmd = cmd;
-#endif
-	short oif_flags;
-#ifdef COMPAT_OIFREQ
+	u_short oif_flags;
 	struct ifreq ifrb;
 	struct oifreq *oifr = NULL;
-#endif
 	int r;
 	struct psref psref;
 	int bound;
+	bool do_if43_post = false;
+	bool do_ifm80_post = false;
 
 	switch (cmd) {
 	case SIOCGIFCONF:
@@ -3150,26 +3278,29 @@ doifioctl(struct socket *so, u_long cmd, void *data, struct lwp *l)
 	case SIOCINITIFADDR:
 		return EPERM;
 	default:
-		error = (*vec_compat_ifconf)(l, cmd, data);
+		MODULE_HOOK_CALL(uipc_syscalls_40_hook, (cmd, data), enosys(),
+		    error);
 		if (error != ENOSYS)
 			return error;
-		error = (*vec_compat_ifdatareq)(l, cmd, data);
+		MODULE_HOOK_CALL(uipc_syscalls_50_hook, (l, cmd, data),
+		    enosys(), error);
 		if (error != ENOSYS)
 			return error;
+		error = 0;
 		break;
 	}
 
 	ifr = data;
-#ifdef COMPAT_OIFREQ
-	if (vec_compat_cvtcmd) {
-		cmd = (*vec_compat_cvtcmd)(cmd);
-		if (cmd != ocmd) {
-			oifr = data;
-			data = ifr = &ifrb;
-			ifreqo2n(oifr, ifr);
-		}
+	/* Pre-conversion */
+	MODULE_HOOK_CALL(if_cvtcmd_43_hook, (&cmd, ocmd), enosys(), error);
+	if (cmd != ocmd) {
+		oifr = data;
+		data = ifr = &ifrb;
+		IFREQO2N_43(oifr, ifr);
+		do_if43_post = true;
 	}
-#endif
+	MODULE_HOOK_CALL(ifmedia_80_pre_hook, (ifr, &cmd, &do_ifm80_post),
+	    enosys(), error);
 
 	switch (cmd) {
 	case SIOCIFCREATE:
@@ -3263,11 +3394,9 @@ doifioctl(struct socket *so, u_long cmd, void *data, struct lwp *l)
 		error = EOPNOTSUPP;
 	else {
 		KERNEL_LOCK_IF_IFP_MPSAFE(ifp);
-#ifdef COMPAT_OSOCK
-		if (vec_compat_ifioctl != NULL)
-			error = (*vec_compat_ifioctl)(so, ocmd, cmd, data, l);
-		else
-#endif
+		MODULE_HOOK_CALL(if_ifioctl_43_hook,
+			     (so, ocmd, cmd, data, l), enosys(), error);
+		if (error == ENOSYS)
 			error = (*so->so_proto->pr_usrreqs->pr_ioctl)(so,
 			    cmd, data, ifp);
 		KERNEL_UNLOCK_IF_IFP_MPSAFE(ifp);
@@ -3280,10 +3409,13 @@ doifioctl(struct socket *so, u_long cmd, void *data, struct lwp *l)
 			splx(s);
 		}
 	}
-#ifdef COMPAT_OIFREQ
-	if (cmd != ocmd)
-		ifreqn2o(oifr, ifr);
-#endif
+
+	/* Post-conversion */
+	if (do_ifm80_post && (error == 0))
+		MODULE_HOOK_CALL(ifmedia_80_post_hook, (ifr, cmd),
+		    enosys(), error);
+	if (do_if43_post)
+		IFREQN2O_43(oifr, ifr);
 
 	IFNET_UNLOCK(ifp);
 	KERNEL_UNLOCK_UNLESS_IFP_MPSAFE(ifp);
@@ -3336,6 +3468,7 @@ ifconf(u_long cmd, void *data)
 	int bound;
 	struct psref psref;
 
+	memset(&ifr, 0, sizeof(ifr));
 	if (docopy) {
 		space = ifc->ifc_len;
 		ifrp = ifc->ifc_req;
@@ -3418,31 +3551,29 @@ int
 ifreq_setaddr(u_long cmd, struct ifreq *ifr, const struct sockaddr *sa)
 {
 	uint8_t len = sizeof(ifr->ifr_ifru.ifru_space);
-#ifdef COMPAT_OIFREQ
 	struct ifreq ifrb;
 	struct oifreq *oifr = NULL;
 	u_long ocmd = cmd;
+	int hook;
 
-	if (vec_compat_cvtcmd) {
-		    cmd = (*vec_compat_cvtcmd)(cmd);
-		    if (cmd != ocmd) {
-			    oifr = (struct oifreq *)(void *)ifr;
-			    ifr = &ifrb;
-			    ifreqo2n(oifr, ifr);
-			    len = sizeof(oifr->ifr_addr);
-		    }
+	MODULE_HOOK_CALL(if_cvtcmd_43_hook, (&cmd, ocmd), enosys(), hook);
+	if (hook != ENOSYS) {
+		if (cmd != ocmd) {
+			oifr = (struct oifreq *)(void *)ifr;
+			ifr = &ifrb;
+			IFREQO2N_43(oifr, ifr);
+				len = sizeof(oifr->ifr_addr);
+		}
 	}
-#endif
+
 	if (len < sa->sa_len)
 		return EFBIG;
 
 	memset(&ifr->ifr_addr, 0, len);
 	sockaddr_copy(&ifr->ifr_addr, len, sa);
 
-#ifdef COMPAT_OIFREQ
 	if (cmd != ocmd)
-		ifreqn2o(oifr, ifr);
-#endif
+		IFREQN2O_43(oifr, ifr);
 	return 0;
 }
 
@@ -3579,8 +3710,8 @@ if_do_dad(struct ifnet *ifp)
 		 * XXX: we should rather mark "tentative" on such addresses,
 		 * and do DAD after the interface becomes ready.
 		 */
-		if ((ifp->if_flags & (IFF_UP|IFF_RUNNING)) !=
-		    (IFF_UP|IFF_RUNNING))
+		if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) !=
+		    (IFF_UP | IFF_RUNNING))
 			return 0;
 
 		return 1;
@@ -3588,7 +3719,7 @@ if_do_dad(struct ifnet *ifp)
 }
 
 int
-if_flags_set(ifnet_t *ifp, const short flags)
+if_flags_set(ifnet_t *ifp, const u_short flags)
 {
 	int rc;
 
@@ -3597,7 +3728,7 @@ if_flags_set(ifnet_t *ifp, const short flags)
 	if (ifp->if_setflags != NULL)
 		rc = (*ifp->if_setflags)(ifp, flags);
 	else {
-		short cantflags, chgdflags;
+		u_short cantflags, chgdflags;
 		struct ifreq ifr;
 
 		chgdflags = ifp->if_flags ^ flags;
@@ -3631,13 +3762,6 @@ if_mcast_op(ifnet_t *ifp, const unsigned long cmd, const struct sockaddr *sa)
 	int rc;
 	struct ifreq ifr;
 
-	/* There remain some paths that don't hold IFNET_LOCK yet */
-#ifdef NET_MPSAFE
-	/* CARP and MROUTING still don't deal with the lock yet */
-#if (!defined(NCARP) || (NCARP == 0)) && !defined(MROUTING)
-	KASSERT(IFNET_LOCKED(ifp));
-#endif
-#endif
 	if (ifp->if_mcastop != NULL)
 		rc = (*ifp->if_mcastop)(ifp, cmd, sa);
 	else {
@@ -3687,7 +3811,7 @@ sysctl_sndq_setup(struct sysctllog **clog, const char *ifname,
 		goto bad;
 
 	if (sysctl_createv(clog, 0, &rnode, &cnode,
-		       CTLFLAG_PERMANENT|CTLFLAG_READWRITE,
+		       CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
 		       CTLTYPE_INT, "maxlen",
 		       SYSCTL_DESCR("Maximum allowed output queue length"),
 		       NULL, 0, &ifq->ifq_maxlen, 0,
@@ -3791,7 +3915,7 @@ sysctl_net_pktq_setup(struct sysctllog **clog, int pf)
 		       len_func, 0, NULL, 0,
 		       CTL_NET, pf, ipn, qid, IFQCTL_LEN, CTL_EOL);
 	sysctl_createv(clog, 0, NULL, NULL,
-		       CTLFLAG_PERMANENT|CTLFLAG_READWRITE,
+		       CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
 		       CTLTYPE_INT, "maxlen",
 		       SYSCTL_DESCR("Maximum allowed input queue length"),
 		       maxlen_func, 0, NULL, 0,

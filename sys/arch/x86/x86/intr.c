@@ -1,4 +1,4 @@
-/*	$NetBSD: intr.c,v 1.141 2018/12/25 06:50:12 cherry Exp $	*/
+/*	$NetBSD: intr.c,v 1.146 2019/06/17 06:38:30 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008, 2009 The NetBSD Foundation, Inc.
@@ -133,7 +133,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.141 2018/12/25 06:50:12 cherry Exp $");
+__KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.146 2019/06/17 06:38:30 msaitoh Exp $");
 
 #include "opt_intrdebug.h"
 #include "opt_multiprocessor.h"
@@ -166,6 +166,15 @@ __KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.141 2018/12/25 06:50:12 cherry Exp $");
 #include "lapic.h"
 #include "pci.h"
 #include "acpica.h"
+#ifndef XEN
+#include "hyperv.h"
+#if NHYPERV > 0
+#include <dev/hyperv/hypervvar.h>
+
+extern void Xresume_hyperv_hypercall(void);
+extern void Xrecurse_hyperv_hypercall(void);
+#endif
+#endif
 
 #if NIOAPIC > 0 || NACPICA > 0
 #include <machine/i82093var.h>
@@ -352,12 +361,13 @@ intr_calculatemasks(struct cpu_info *ci)
  * by MI code and intrctl(8).
  */
 const char *
-intr_create_intrid(int legacy_irq, struct pic *pic, int pin, char *buf, size_t len)
+intr_create_intrid(int legacy_irq, struct pic *pic, int pin, char *buf,
+    size_t len)
 {
 	int ih = 0;
 
 #if NPCI > 0
-#if defined(__HAVE_PCI_MSI_MSIX)	
+#if defined(__HAVE_PCI_MSI_MSIX)
 	if ((pic->pic_type == PIC_MSI) || (pic->pic_type == PIC_MSIX)) {
 		uint64_t pih;
 		int dev, vec;
@@ -374,7 +384,7 @@ intr_create_intrid(int legacy_irq, struct pic *pic, int pin, char *buf, size_t l
 
 		return x86_pci_msi_string(NULL, pih, buf, len);
 	}
-#endif /* __HAVE_PCI_MSI_MSIX */	
+#endif /* __HAVE_PCI_MSI_MSIX */
 #endif
 
 	if (pic->pic_type == PIC_XEN) {
@@ -652,6 +662,19 @@ intr_allocate_slot(struct pic *pic, int pin, int level,
 	if (pic == &i8259_pic) {
 		idtvec = ICU_OFFSET + pin;
 	} else {
+		/*
+		 * TODO to support MSI (not MSI-X) multiple vectors
+		 *
+		 * PCI Local Bus Specification Revision 3.0 says the devices
+		 * which use MSI multiple vectors increment the low order bits
+		 * of MSI message data.
+		 * On the other hand, Intel SDM "10.11.2 Message Data Register
+		 * Format" says the 7:0 bits of MSI message data mean Interrupt
+		 * Descriptor Table(IDT) vector.
+		 * As the result of these two documents, the IDT vectors which
+		 * are used by a device using MSI multiple vectors must be
+		 * continuous.
+		 */
 		idtvec = idt_vec_alloc(APIC_LEVEL(level), IDT_INTR_HIGH);
 	}
 	if (idtvec == 0) {
@@ -936,10 +959,10 @@ intr_establish_xname(int legacy_irq, struct pic *pic, int pin, int type,
 	mutex_exit(&cpu_lock);
 
 	if (bootverbose || cpu_index(ci) != 0)
-		aprint_verbose("allocated pic %s type %s pin %d level %d to %s slot %d "
-		    "idt entry %d\n",
-		    pic->pic_name, type == IST_EDGE ? "edge" : "level", pin, level,
-		    device_xname(ci->ci_dev), slot, idt_vec);
+		aprint_verbose("allocated pic %s type %s pin %d level %d to "
+		    "%s slot %d idt entry %d\n",
+		    pic->pic_name, type == IST_EDGE ? "edge" : "level", pin,
+		    level, device_xname(ci->ci_dev), slot, idt_vec);
 
 	return (ih);
 }
@@ -1011,7 +1034,8 @@ intr_disestablish_xcall(void *arg1, void *arg2)
 	 *
 	 */
 	if (source->is_handlers == NULL)
-		(*pic->pic_delroute)(pic, ci, ih->ih_pin, idtvec, source->is_type);
+		(*pic->pic_delroute)(pic, ci, ih->ih_pin, idtvec,
+		    source->is_type);
 	else
 		(*pic->pic_hwunmask)(pic, ih->ih_pin);
 
@@ -1131,7 +1155,7 @@ intr_string(intr_handle_t ih, char *buf, size_t len)
 		snprintf(buf, len, "irq %d", APIC_IRQ_LEGACY_IRQ(ih));
 
 #elif NLAPIC > 0
-	snprintf(buf, len, "irq %d" APIC_IRQ_LEGACY_IRQ(ih));
+	snprintf(buf, len, "irq %d", APIC_IRQ_LEGACY_IRQ(ih));
 #else
 	snprintf(buf, len, "irq %d", (int) ih);
 #endif
@@ -1150,6 +1174,9 @@ struct intrhand fake_softbio_intrhand;
 struct intrhand fake_timer_intrhand;
 struct intrhand fake_ipi_intrhand;
 struct intrhand fake_preempt_intrhand;
+#if NHYPERV > 0
+struct intrhand fake_hyperv_intrhand;
+#endif
 
 #if NLAPIC > 0 && defined(MULTIPROCESSOR)
 static const char *x86_ipi_names[X86_NIPI] = X86_IPI_NAMES;
@@ -1180,7 +1207,8 @@ redzone_const_or_zero(int x)
 void
 cpu_intr_init(struct cpu_info *ci)
 {
-#if (NLAPIC > 0) || defined(MULTIPROCESSOR) || defined(__HAVE_PREEMPTION)
+#if (NLAPIC > 0) || defined(MULTIPROCESSOR) || defined(__HAVE_PREEMPTION) || \
+    (NHYPERV > 0)
 	struct intrsource *isp;
 #endif
 #if NLAPIC > 0
@@ -1216,6 +1244,20 @@ cpu_intr_init(struct cpu_info *ci)
 		evcnt_attach_dynamic(&ci->ci_ipi_events[i], EVCNT_TYPE_MISC,
 		    NULL, device_xname(ci->ci_dev), x86_ipi_names[i]);
 #endif
+
+#if NHYPERV > 0
+	if (hyperv_hypercall_enabled()) {
+		isp = kmem_zalloc(sizeof(*isp), KM_SLEEP);
+		isp->is_recurse = Xrecurse_hyperv_hypercall;
+		isp->is_resume = Xresume_hyperv_hypercall;
+		fake_hyperv_intrhand.ih_level = IPL_NET;
+		isp->is_handlers = &fake_hyperv_intrhand;
+		isp->is_pic = &local_pic;
+		ci->ci_isources[LIR_HV] = isp;
+		evcnt_attach_dynamic(&isp->is_evcnt, EVCNT_TYPE_INTR, NULL,
+		    device_xname(ci->ci_dev), "Hyper-V hypercall");
+	}
+#endif
 #endif
 
 #if defined(__HAVE_PREEMPTION)
@@ -1239,7 +1281,7 @@ cpu_intr_init(struct cpu_info *ci)
 	 */
 	istack = uvm_km_alloc(kernel_map,
 	    INTRSTACKSIZE + redzone_const_or_zero(2 * PAGE_SIZE), 0,
-	    UVM_KMF_WIRED|UVM_KMF_ZERO);
+	    UVM_KMF_WIRED | UVM_KMF_ZERO);
 	if (redzone_const_or_false(true)) {
 		pmap_kremove(istack, PAGE_SIZE);
 		pmap_kremove(istack + INTRSTACKSIZE + PAGE_SIZE, PAGE_SIZE);
@@ -1256,6 +1298,13 @@ cpu_intr_init(struct cpu_info *ci)
 #endif
 
 	ci->ci_idepth = -1;
+
+#ifdef XENPVHVM
+	ci->ci_xunmask[0] = 0xfffffffe;
+	for (int i = 1; i < NIPL; i++)
+		ci->ci_xunmask[i] = ci->ci_xunmask[i - 1] & ~(1 << i);
+#endif
+
 }
 
 #if defined(INTRDEBUG) || defined(DDB)
@@ -1287,9 +1336,10 @@ intr_printconfig(void)
 			isp = ci->ci_isources[i];
 			if (isp == NULL)
 				continue;
-			(*pr)("%s source %d is pin %d from pic %s type %d maxlevel %d\n",
-			    device_xname(ci->ci_dev), i, isp->is_pin,
-			    isp->is_pic->pic_name, isp->is_type, isp->is_maxlevel);
+			(*pr)("%s source %d is pin %d from pic %s type %d "
+			    "maxlevel %d\n", device_xname(ci->ci_dev), i,
+			    isp->is_pin, isp->is_pic->pic_name, isp->is_type,
+			    isp->is_maxlevel);
 			for (ih = isp->is_handlers; ih != NULL;
 			     ih = ih->ih_next)
 				(*pr)("\thandler %p level %d\n",
@@ -1796,8 +1846,8 @@ intr_set_affinity(struct intrsource *isp, const kcpuset_t *cpuset)
 
 	err = intr_find_unused_slot(newci, &newslot);
 	if (err) {
-		DPRINTF(("failed to allocate interrupt slot for PIC %s intrid %s\n",
-			isp->is_pic->pic_name, isp->is_intrid));
+		DPRINTF(("failed to allocate interrupt slot for PIC %s intrid "
+			"%s\n", isp->is_pic->pic_name, isp->is_intrid));
 		return err;
 	}
 
@@ -2076,7 +2126,8 @@ interrupt_construct_intrids(const kcpuset_t *cpuset)
 		return 0;
 
 	/*
-	 * Count the number of interrupts which affinity to any cpu of "cpuset".
+	 * Count the number of interrupts which affinity to any cpu of
+	 * "cpuset".
 	 */
 	count = 0;
 	mutex_enter(&cpu_lock);

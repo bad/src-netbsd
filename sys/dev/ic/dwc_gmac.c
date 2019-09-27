@@ -1,4 +1,4 @@
-/* $NetBSD: dwc_gmac.c,v 1.55 2018/10/08 17:09:31 martin Exp $ */
+/* $NetBSD: dwc_gmac.c,v 1.65 2019/09/13 07:55:06 msaitoh Exp $ */
 
 /*-
  * Copyright (c) 2013, 2014 The NetBSD Foundation, Inc.
@@ -41,7 +41,7 @@
 
 #include <sys/cdefs.h>
 
-__KERNEL_RCSID(1, "$NetBSD: dwc_gmac.c,v 1.55 2018/10/08 17:09:31 martin Exp $");
+__KERNEL_RCSID(1, "$NetBSD: dwc_gmac.c,v 1.65 2019/09/13 07:55:06 msaitoh Exp $");
 
 /* #define	DWC_GMAC_DEBUG	1 */
 
@@ -57,6 +57,7 @@ __KERNEL_RCSID(1, "$NetBSD: dwc_gmac.c,v 1.55 2018/10/08 17:09:31 martin Exp $")
 #include <sys/systm.h>
 #include <sys/sockio.h>
 #include <sys/cprng.h>
+#include <sys/rndsource.h>
 
 #include <net/if.h>
 #include <net/if_ether.h>
@@ -71,35 +72,34 @@ __KERNEL_RCSID(1, "$NetBSD: dwc_gmac.c,v 1.55 2018/10/08 17:09:31 martin Exp $")
 #include <dev/ic/dwc_gmac_reg.h>
 #include <dev/ic/dwc_gmac_var.h>
 
-static int dwc_gmac_miibus_read_reg(device_t, int, int);
-static void dwc_gmac_miibus_write_reg(device_t, int, int, int);
+static int dwc_gmac_miibus_read_reg(device_t, int, int, uint16_t *);
+static int dwc_gmac_miibus_write_reg(device_t, int, int, uint16_t);
 static void dwc_gmac_miibus_statchg(struct ifnet *);
 
-static int dwc_gmac_reset(struct dwc_gmac_softc *sc);
-static void dwc_gmac_write_hwaddr(struct dwc_gmac_softc *sc,
-			 uint8_t enaddr[ETHER_ADDR_LEN]);
-static int dwc_gmac_alloc_dma_rings(struct dwc_gmac_softc *sc);
-static void dwc_gmac_free_dma_rings(struct dwc_gmac_softc *sc);
-static int dwc_gmac_alloc_rx_ring(struct dwc_gmac_softc *sc, struct dwc_gmac_rx_ring *);
-static void dwc_gmac_reset_rx_ring(struct dwc_gmac_softc *sc, struct dwc_gmac_rx_ring *);
-static void dwc_gmac_free_rx_ring(struct dwc_gmac_softc *sc, struct dwc_gmac_rx_ring *);
-static int dwc_gmac_alloc_tx_ring(struct dwc_gmac_softc *sc, struct dwc_gmac_tx_ring *);
-static void dwc_gmac_reset_tx_ring(struct dwc_gmac_softc *sc, struct dwc_gmac_tx_ring *);
-static void dwc_gmac_free_tx_ring(struct dwc_gmac_softc *sc, struct dwc_gmac_tx_ring *);
-static void dwc_gmac_txdesc_sync(struct dwc_gmac_softc *sc, int start, int end, int ops);
-static int dwc_gmac_init(struct ifnet *ifp);
-static int dwc_gmac_init_locked(struct ifnet *ifp);
-static void dwc_gmac_stop(struct ifnet *ifp, int disable);
-static void dwc_gmac_stop_locked(struct ifnet *ifp, int disable);
-static void dwc_gmac_start(struct ifnet *ifp);
-static void dwc_gmac_start_locked(struct ifnet *ifp);
-static int dwc_gmac_queue(struct dwc_gmac_softc *sc, struct mbuf *m0);
+static int dwc_gmac_reset(struct dwc_gmac_softc *);
+static void dwc_gmac_write_hwaddr(struct dwc_gmac_softc *, uint8_t *);
+static int dwc_gmac_alloc_dma_rings(struct dwc_gmac_softc *);
+static void dwc_gmac_free_dma_rings(struct dwc_gmac_softc *);
+static int dwc_gmac_alloc_rx_ring(struct dwc_gmac_softc *, struct dwc_gmac_rx_ring *);
+static void dwc_gmac_reset_rx_ring(struct dwc_gmac_softc *, struct dwc_gmac_rx_ring *);
+static void dwc_gmac_free_rx_ring(struct dwc_gmac_softc *, struct dwc_gmac_rx_ring *);
+static int dwc_gmac_alloc_tx_ring(struct dwc_gmac_softc *, struct dwc_gmac_tx_ring *);
+static void dwc_gmac_reset_tx_ring(struct dwc_gmac_softc *, struct dwc_gmac_tx_ring *);
+static void dwc_gmac_free_tx_ring(struct dwc_gmac_softc *, struct dwc_gmac_tx_ring *);
+static void dwc_gmac_txdesc_sync(struct dwc_gmac_softc *, int, int, int);
+static int dwc_gmac_init(struct ifnet *);
+static int dwc_gmac_init_locked(struct ifnet *);
+static void dwc_gmac_stop(struct ifnet *, int);
+static void dwc_gmac_stop_locked(struct ifnet *, int);
+static void dwc_gmac_start(struct ifnet *);
+static void dwc_gmac_start_locked(struct ifnet *);
+static int dwc_gmac_queue(struct dwc_gmac_softc *, struct mbuf *);
 static int dwc_gmac_ioctl(struct ifnet *, u_long, void *);
-static void dwc_gmac_tx_intr(struct dwc_gmac_softc *sc);
-static void dwc_gmac_rx_intr(struct dwc_gmac_softc *sc);
-static void dwc_gmac_setmulti(struct dwc_gmac_softc *sc);
+static void dwc_gmac_tx_intr(struct dwc_gmac_softc *);
+static void dwc_gmac_rx_intr(struct dwc_gmac_softc *);
+static void dwc_gmac_setmulti(struct dwc_gmac_softc *);
 static int dwc_gmac_ifflags_cb(struct ethercom *);
-static uint32_t	bitrev32(uint32_t x);
+static uint32_t	bitrev32(uint32_t);
 static void dwc_gmac_desc_set_owned_by_dev(struct dwc_gmac_dev_dmadesc *);
 static int  dwc_gmac_desc_is_owned_by_dev(struct dwc_gmac_dev_dmadesc *);
 static void dwc_gmac_desc_std_set_len(struct dwc_gmac_dev_dmadesc *, int);
@@ -157,14 +157,14 @@ static const struct dwc_gmac_desc_methods desc_methods_enhanced = {
 
 
 
-#define	GMAC_DEF_DMA_INT_MASK	(GMAC_DMA_INT_TIE|GMAC_DMA_INT_RIE| \
-				GMAC_DMA_INT_NIE|GMAC_DMA_INT_AIE| \
-				GMAC_DMA_INT_FBE|GMAC_DMA_INT_UNE)
+#define	GMAC_DEF_DMA_INT_MASK	(GMAC_DMA_INT_TIE | GMAC_DMA_INT_RIE | \
+				GMAC_DMA_INT_NIE | GMAC_DMA_INT_AIE | \
+				GMAC_DMA_INT_FBE | GMAC_DMA_INT_UNE)
 
-#define	GMAC_DMA_INT_ERRORS	(GMAC_DMA_INT_AIE|GMAC_DMA_INT_ERE| \
-				GMAC_DMA_INT_FBE|	\
-				GMAC_DMA_INT_RWE|GMAC_DMA_INT_RUE| \
-				GMAC_DMA_INT_UNE|GMAC_DMA_INT_OVE| \
+#define	GMAC_DMA_INT_ERRORS	(GMAC_DMA_INT_AIE | GMAC_DMA_INT_ERE | \
+				GMAC_DMA_INT_FBE |	\
+				GMAC_DMA_INT_RWE | GMAC_DMA_INT_RUE | \
+				GMAC_DMA_INT_UNE | GMAC_DMA_INT_OVE | \
 				GMAC_DMA_INT_TJE)
 
 #define	AWIN_DEF_MAC_INTRMASK	\
@@ -172,20 +172,16 @@ static const struct dwc_gmac_desc_methods desc_methods_enhanced = {
 	AWIN_GMAC_MAC_INT_LINKCHG)
 
 #ifdef DWC_GMAC_DEBUG
-static void dwc_gmac_dump_dma(struct dwc_gmac_softc *sc);
-static void dwc_gmac_dump_tx_desc(struct dwc_gmac_softc *sc);
-static void dwc_gmac_dump_rx_desc(struct dwc_gmac_softc *sc);
-static void dwc_dump_and_abort(struct dwc_gmac_softc *sc, const char *msg);
-static void dwc_dump_status(struct dwc_gmac_softc *sc);
-static void dwc_gmac_dump_ffilt(struct dwc_gmac_softc *sc, uint32_t ffilt);
-#endif
-
-#ifdef NET_MPSAFE
-#define DWCGMAC_MPSAFE	1
+static void dwc_gmac_dump_dma(struct dwc_gmac_softc *);
+static void dwc_gmac_dump_tx_desc(struct dwc_gmac_softc *);
+static void dwc_gmac_dump_rx_desc(struct dwc_gmac_softc *);
+static void dwc_dump_and_abort(struct dwc_gmac_softc *, const char *);
+static void dwc_dump_status(struct dwc_gmac_softc *);
+static void dwc_gmac_dump_ffilt(struct dwc_gmac_softc *, uint32_t);
 #endif
 
 int
-dwc_gmac_attach(struct dwc_gmac_softc *sc, uint32_t mii_clk)
+dwc_gmac_attach(struct dwc_gmac_softc *sc, int phy_id, uint32_t mii_clk)
 {
 	uint8_t enaddr[ETHER_ADDR_LEN];
 	uint32_t maclo, machi, ver, hwft;
@@ -302,20 +298,20 @@ dwc_gmac_attach(struct dwc_gmac_softc *sc, uint32_t mii_clk)
 	 */
 	sc->sc_ec.ec_mii = &sc->sc_mii;
 	ifmedia_init(&mii->mii_media, 0, ether_mediachange, ether_mediastatus);
-        mii->mii_ifp = ifp;
-        mii->mii_readreg = dwc_gmac_miibus_read_reg;
-        mii->mii_writereg = dwc_gmac_miibus_write_reg;
-        mii->mii_statchg = dwc_gmac_miibus_statchg;
-        mii_attach(sc->sc_dev, mii, 0xffffffff, MII_PHY_ANY, MII_OFFSET_ANY,
+	mii->mii_ifp = ifp;
+	mii->mii_readreg = dwc_gmac_miibus_read_reg;
+	mii->mii_writereg = dwc_gmac_miibus_write_reg;
+	mii->mii_statchg = dwc_gmac_miibus_statchg;
+	mii_attach(sc->sc_dev, mii, 0xffffffff, phy_id, MII_OFFSET_ANY,
 	    MIIF_DOPAUSE);
 
-        if (LIST_EMPTY(&mii->mii_phys)) {
-                aprint_error_dev(sc->sc_dev, "no PHY found!\n");
-                ifmedia_add(&mii->mii_media, IFM_ETHER|IFM_MANUAL, 0, NULL);
-                ifmedia_set(&mii->mii_media, IFM_ETHER|IFM_MANUAL);
-        } else {
-                ifmedia_set(&mii->mii_media, IFM_ETHER|IFM_AUTO);
-        }
+	if (LIST_EMPTY(&mii->mii_phys)) {
+		aprint_error_dev(sc->sc_dev, "no PHY found!\n");
+		ifmedia_add(&mii->mii_media, IFM_ETHER | IFM_MANUAL, 0, NULL);
+		ifmedia_set(&mii->mii_media, IFM_ETHER | IFM_MANUAL);
+	} else {
+		ifmedia_set(&mii->mii_media, IFM_ETHER | IFM_AUTO);
+	}
 
 	/*
 	 * We can support 802.1Q VLAN-sized frames.
@@ -334,6 +330,8 @@ dwc_gmac_attach(struct dwc_gmac_softc *sc, uint32_t mii_clk)
 	ether_ifattach(ifp, enaddr);
 	ether_set_ifflags_cb(&sc->sc_ec, dwc_gmac_ifflags_cb);
 	if_register(ifp);
+	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
+	    RND_TYPE_NET, RND_FLAG_DEFAULT);
 
 	/*
 	 * Enable interrupts
@@ -369,7 +367,8 @@ dwc_gmac_reset(struct dwc_gmac_softc *sc)
 {
 	size_t cnt;
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_DMA_BUSMODE,
-	    bus_space_read_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_DMA_BUSMODE) | GMAC_BUSMODE_RESET);
+	    bus_space_read_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_DMA_BUSMODE)
+	    | GMAC_BUSMODE_RESET);
 	for (cnt = 0; cnt < 3000; cnt++) {
 		if ((bus_space_read_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_DMA_BUSMODE)
 		    & GMAC_BUSMODE_RESET) == 0)
@@ -395,16 +394,15 @@ dwc_gmac_write_hwaddr(struct dwc_gmac_softc *sc,
 }
 
 static int
-dwc_gmac_miibus_read_reg(device_t self, int phy, int reg)
+dwc_gmac_miibus_read_reg(device_t self, int phy, int reg, uint16_t *val)
 {
 	struct dwc_gmac_softc * const sc = device_private(self);
 	uint16_t mii;
 	size_t cnt;
-	int rv = 0;
 
-	mii = __SHIFTIN(phy,GMAC_MII_PHY_MASK)
-	    | __SHIFTIN(reg,GMAC_MII_REG_MASK)
-	    | __SHIFTIN(sc->sc_mii_clk,GMAC_MII_CLKMASK)
+	mii = __SHIFTIN(phy, GMAC_MII_PHY_MASK)
+	    | __SHIFTIN(reg, GMAC_MII_REG_MASK)
+	    | __SHIFTIN(sc->sc_mii_clk, GMAC_MII_CLKMASK)
 	    | GMAC_MII_BUSY;
 
 	mutex_enter(&sc->sc_mdio_lock);
@@ -413,7 +411,7 @@ dwc_gmac_miibus_read_reg(device_t self, int phy, int reg)
 	for (cnt = 0; cnt < 1000; cnt++) {
 		if (!(bus_space_read_4(sc->sc_bst, sc->sc_bsh,
 		    AWIN_GMAC_MAC_MIIADDR) & GMAC_MII_BUSY)) {
-			rv = bus_space_read_4(sc->sc_bst, sc->sc_bsh,
+			*val = bus_space_read_4(sc->sc_bst, sc->sc_bsh,
 			    AWIN_GMAC_MAC_MIIDATA);
 			break;
 		}
@@ -422,19 +420,22 @@ dwc_gmac_miibus_read_reg(device_t self, int phy, int reg)
 
 	mutex_exit(&sc->sc_mdio_lock);
 
-	return rv;
+	if (cnt >= 1000)
+		return ETIMEDOUT;
+
+	return 0;
 }
 
-static void
-dwc_gmac_miibus_write_reg(device_t self, int phy, int reg, int val)
+static int
+dwc_gmac_miibus_write_reg(device_t self, int phy, int reg, uint16_t val)
 {
 	struct dwc_gmac_softc * const sc = device_private(self);
 	uint16_t mii;
 	size_t cnt;
 
-	mii = __SHIFTIN(phy,GMAC_MII_PHY_MASK)
-	    | __SHIFTIN(reg,GMAC_MII_REG_MASK)
-	    | __SHIFTIN(sc->sc_mii_clk,GMAC_MII_CLKMASK)
+	mii = __SHIFTIN(phy, GMAC_MII_PHY_MASK)
+	    | __SHIFTIN(reg, GMAC_MII_REG_MASK)
+	    | __SHIFTIN(sc->sc_mii_clk, GMAC_MII_CLKMASK)
 	    | GMAC_MII_BUSY | GMAC_MII_WRITE;
 
 	mutex_enter(&sc->sc_mdio_lock);
@@ -449,6 +450,11 @@ dwc_gmac_miibus_write_reg(device_t self, int phy, int reg, int val)
 	}
 
 	mutex_exit(&sc->sc_mdio_lock);
+
+	if (cnt >= 1000)
+		return ETIMEDOUT;
+
+	return 0;
 }
 
 static int
@@ -516,7 +522,7 @@ dwc_gmac_alloc_rx_ring(struct dwc_gmac_softc *sc,
 
 	bus_dmamap_sync(sc->sc_dmat, sc->sc_dma_ring_map, 0,
 	    AWGE_RX_RING_COUNT*sizeof(struct dwc_gmac_dev_dmadesc),
-	    BUS_DMASYNC_PREWRITE|BUS_DMASYNC_PREREAD);
+	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_DMA_RX_ADDR,
 	    ring->r_physaddr);
 
@@ -544,7 +550,7 @@ dwc_gmac_reset_rx_ring(struct dwc_gmac_softc *sc,
 
 	bus_dmamap_sync(sc->sc_dmat, sc->sc_dma_ring_map, 0,
 	    AWGE_RX_RING_COUNT*sizeof(struct dwc_gmac_dev_dmadesc),
-	    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
+	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 
 	ring->r_cur = ring->r_next = 0;
 	/* reset DMA address to start of ring */
@@ -571,7 +577,7 @@ dwc_gmac_alloc_dma_rings(struct dwc_gmac_softc *sc)
 	}
 
 	error = bus_dmamem_alloc(sc->sc_dmat, descsize, PAGE_SIZE, 0,
-	    &sc->sc_dma_ring_seg, 1, &nsegs, BUS_DMA_NOWAIT|BUS_DMA_COHERENT);
+	    &sc->sc_dma_ring_seg, 1, &nsegs, BUS_DMA_NOWAIT |BUS_DMA_COHERENT);
 	if (error != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "could not map DMA memory\n");
@@ -579,7 +585,7 @@ dwc_gmac_alloc_dma_rings(struct dwc_gmac_softc *sc)
 	}
 
 	error = bus_dmamem_map(sc->sc_dmat, &sc->sc_dma_ring_seg, nsegs,
-	    descsize, &rings, BUS_DMA_NOWAIT|BUS_DMA_COHERENT);
+	    descsize, &rings, BUS_DMA_NOWAIT | BUS_DMA_COHERENT);
 	if (error != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "could not allocate DMA memory\n");
@@ -587,7 +593,7 @@ dwc_gmac_alloc_dma_rings(struct dwc_gmac_softc *sc)
 	}
 
 	error = bus_dmamap_load(sc->sc_dmat, sc->sc_dma_ring_map, rings,
-	    descsize, NULL, BUS_DMA_NOWAIT|BUS_DMA_COHERENT);
+	    descsize, NULL, BUS_DMA_NOWAIT | BUS_DMA_COHERENT);
 	if (error != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "could not load desc DMA map\n");
@@ -665,7 +671,7 @@ dwc_gmac_alloc_tx_ring(struct dwc_gmac_softc *sc,
 	for (i = 0; i < AWGE_TX_RING_COUNT; i++) {
 		error = bus_dmamap_create(sc->sc_dmat, MCLBYTES,
 		    AWGE_TX_RING_COUNT, MCLBYTES, 0,
-		    BUS_DMA_NOWAIT|BUS_DMA_COHERENT,
+		    BUS_DMA_NOWAIT | BUS_DMA_COHERENT,
 		    &ring->t_data[i].td_map);
 		if (error != 0) {
 			aprint_error_dev(sc->sc_dev,
@@ -688,7 +694,7 @@ fail:
 static void
 dwc_gmac_txdesc_sync(struct dwc_gmac_softc *sc, int start, int end, int ops)
 {
-	/* 'end' is pointing one descriptor beyound the last we want to sync */
+	/* 'end' is pointing one descriptor beyond the last we want to sync */
 	if (end > start) {
 		bus_dmamap_sync(sc->sc_dmat, sc->sc_dma_ring_map,
 		    TX_DESC_OFFSET(start),
@@ -733,7 +739,7 @@ dwc_gmac_reset_tx_ring(struct dwc_gmac_softc *sc,
 	bus_dmamap_sync(sc->sc_dmat, sc->sc_dma_ring_map,
 	    TX_DESC_OFFSET(0),
 	    AWGE_TX_RING_COUNT*sizeof(struct dwc_gmac_dev_dmadesc),
-	    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
+	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_DMA_TX_ADDR,
 	    sc->sc_txq.t_physaddr);
 
@@ -782,8 +788,8 @@ dwc_gmac_miibus_statchg(struct ifnet *ifp)
 	 * negotiated by the PHY.
 	 */
 	conf = bus_space_read_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_MAC_CONF);
-	conf &= ~(AWIN_GMAC_MAC_CONF_FES100|AWIN_GMAC_MAC_CONF_MIISEL
-	    |AWIN_GMAC_MAC_CONF_FULLDPLX);
+	conf &= ~(AWIN_GMAC_MAC_CONF_FES100 | AWIN_GMAC_MAC_CONF_MIISEL
+	    | AWIN_GMAC_MAC_CONF_FULLDPLX);
 	conf |= AWIN_GMAC_MAC_CONF_FRAMEBURST
 	    | AWIN_GMAC_MAC_CONF_DISABLERXOWN
 	    | AWIN_GMAC_MAC_CONF_DISABLEJABBER
@@ -952,7 +958,7 @@ dwc_gmac_start_locked(struct ifnet *ifp)
 	if (sc->sc_txq.t_queued != old) {
 		/* packets have been queued, kick it off */
 		dwc_gmac_txdesc_sync(sc, start, sc->sc_txq.t_cur,
-		    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
+		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 
 #ifdef DWC_GMAC_DEBUG
 		dwc_dump_status(sc);
@@ -982,12 +988,12 @@ dwc_gmac_stop_locked(struct ifnet *ifp, int disable)
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh,
 	    AWIN_GMAC_DMA_OPMODE,
 	    bus_space_read_4(sc->sc_bst, sc->sc_bsh,
-	        AWIN_GMAC_DMA_OPMODE)
-		& ~(GMAC_DMA_OP_TXSTART|GMAC_DMA_OP_RXSTART));
+		AWIN_GMAC_DMA_OPMODE)
+		& ~(GMAC_DMA_OP_TXSTART | GMAC_DMA_OP_RXSTART));
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh,
 	    AWIN_GMAC_DMA_OPMODE,
 	    bus_space_read_4(sc->sc_bst, sc->sc_bsh,
-	        AWIN_GMAC_DMA_OPMODE) | GMAC_DMA_OP_FLUSHTX);
+		AWIN_GMAC_DMA_OPMODE) | GMAC_DMA_OP_FLUSHTX);
 
 	mii_down(&sc->sc_mii);
 	dwc_gmac_reset_tx_ring(sc, &sc->sc_txq);
@@ -1016,7 +1022,7 @@ dwc_gmac_queue(struct dwc_gmac_softc *sc, struct mbuf *m0)
 	map = sc->sc_txq.t_data[first].td_map;
 
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m0,
-	    BUS_DMA_WRITE|BUS_DMA_NOWAIT);
+	    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 	if (error != 0) {
 		aprint_error_dev(sc->sc_dev, "could not map mbuf "
 		    "(len: %d, error %d)\n", m0->m_pkthdr.len, error);
@@ -1088,10 +1094,10 @@ dwc_gmac_ifflags_cb(struct ethercom *ec)
 	int ret = 0;
 
 	mutex_enter(sc->sc_lock);
-	int change = ifp->if_flags ^ sc->sc_if_flags;
+	u_short change = ifp->if_flags ^ sc->sc_if_flags;
 	sc->sc_if_flags = ifp->if_flags;
 
-	if ((change & ~(IFF_CANTCHANGE|IFF_DEBUG)) != 0) {
+	if ((change & ~(IFF_CANTCHANGE | IFF_DEBUG)) != 0) {
 		ret = ENETRESET;
 		goto out;
 	}
@@ -1167,7 +1173,7 @@ dwc_gmac_tx_intr(struct dwc_gmac_softc *sc)
 		 * a single tx descriptor (i)
 		 */
 		dwc_gmac_txdesc_sync(sc, i, i+1,
-		    BUS_DMASYNC_POSTREAD|BUS_DMASYNC_POSTWRITE);
+		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 
 		desc = &sc->sc_txq.t_desc[i];
 		if (sc->sc_descm->tx_is_owned_by_dev(desc))
@@ -1217,7 +1223,7 @@ dwc_gmac_rx_intr(struct dwc_gmac_softc *sc)
 	for (i = sc->sc_rxq.r_cur; ; i = RX_NEXT(i)) {
 		bus_dmamap_sync(sc->sc_dmat, sc->sc_dma_ring_map,
 		    RX_DESC_OFFSET(i), sizeof(*desc),
-		    BUS_DMASYNC_POSTREAD|BUS_DMASYNC_POSTWRITE);
+		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 		desc = &sc->sc_rxq.r_desc[i];
 		data = &sc->sc_rxq.r_data[i];
 
@@ -1307,7 +1313,7 @@ skip:
 
 		bus_dmamap_sync(sc->sc_dmat, sc->sc_dma_ring_map,
 		    RX_DESC_OFFSET(i), sizeof(*desc),
-		    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
+		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 	}
 
 	/* update RX pointer */
@@ -1336,6 +1342,7 @@ dwc_gmac_setmulti(struct dwc_gmac_softc *sc)
 	struct ifnet * const ifp = &sc->sc_ec.ec_if;
 	struct ether_multi *enm;
 	struct ether_multistep step;
+	struct ethercom *ec = &sc->sc_ec;
 	uint32_t hashes[2] = { 0, 0 };
 	uint32_t ffilt, h;
 	int mcnt;
@@ -1349,19 +1356,21 @@ dwc_gmac_setmulti(struct dwc_gmac_softc *sc)
 		goto special_filter;
 	}
 
-	ifp->if_flags &= ~IFF_ALLMULTI;
-	ffilt &= ~(AWIN_GMAC_MAC_FFILT_PM|AWIN_GMAC_MAC_FFILT_PR);
+	ffilt &= ~(AWIN_GMAC_MAC_FFILT_PM | AWIN_GMAC_MAC_FFILT_PR);
 
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_MAC_HTLOW, 0);
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_MAC_HTHIGH, 0);
 
-	ETHER_FIRST_MULTI(step, &sc->sc_ec, enm);
+	ETHER_LOCK(ec);
+	ec->ec_flags &= ~ETHER_F_ALLMULTI;
+	ETHER_FIRST_MULTI(step, ec, enm);
 	mcnt = 0;
 	while (enm != NULL) {
 		if (memcmp(enm->enm_addrlo, enm->enm_addrhi,
 		    ETHER_ADDR_LEN) != 0) {
 			ffilt |= AWIN_GMAC_MAC_FFILT_PM;
-			ifp->if_flags |= IFF_ALLMULTI;
+			ec->ec_flags |= ETHER_F_ALLMULTI;
+			ETHER_UNLOCK(ec);
 			goto special_filter;
 		}
 
@@ -1373,6 +1382,7 @@ dwc_gmac_setmulti(struct dwc_gmac_softc *sc)
 		mcnt++;
 		ETHER_NEXT_MULTI(step, enm);
 	}
+	ETHER_UNLOCK(ec);
 
 	if (mcnt)
 		ffilt |= AWIN_GMAC_MAC_FFILT_HMC;
@@ -1384,7 +1394,7 @@ dwc_gmac_setmulti(struct dwc_gmac_softc *sc)
 	    hashes[0]);
 	bus_space_write_4(sc->sc_bst, sc->sc_bsh, AWIN_GMAC_MAC_HTHIGH,
 	    hashes[1]);
-	sc->sc_if_flags = sc->sc_ec.ec_if.if_flags;
+	sc->sc_if_flags = ifp->if_flags;
 
 #ifdef DWC_GMAC_DEBUG
 	dwc_gmac_dump_ffilt(sc, ffilt);
@@ -1425,7 +1435,7 @@ dwc_gmac_intr(struct dwc_gmac_softc *sc)
 	dma_status = bus_space_read_4(sc->sc_bst, sc->sc_bsh,
 	    AWIN_GMAC_DMA_STATUS);
 
-	if (dma_status & (GMAC_DMA_INT_NIE|GMAC_DMA_INT_AIE))
+	if (dma_status & (GMAC_DMA_INT_NIE | GMAC_DMA_INT_AIE))
 		rv = 1;
 
 	if (dma_status & GMAC_DMA_INT_TIE)
@@ -1443,6 +1453,8 @@ dwc_gmac_intr(struct dwc_gmac_softc *sc)
 		dwc_dump_and_abort(sc, "interrupt error condition");
 #endif
 	}
+
+	rnd_add_uint32(&sc->rnd_source, dma_status);
 
 	/* ack interrupt */
 	if (dma_status)

@@ -1,4 +1,4 @@
-/* $NetBSD: fdtvar.h,v 1.44 2019/01/02 18:38:43 jmcneill Exp $ */
+/* $NetBSD: fdtvar.h,v 1.53 2019/08/13 16:46:49 tnn Exp $ */
 
 /*-
  * Copyright (c) 2015 Jared D. McNeill <jmcneill@invisible.ca>
@@ -31,6 +31,7 @@
 
 #include <sys/types.h>
 #include <sys/bus.h>
+#include <sys/gpio.h>
 #include <sys/termios.h>
 
 #include <dev/i2c/i2cvar.h>
@@ -41,7 +42,7 @@
 #include "audio.h"
 #endif
 #if NAUDIO > 0
-#include <dev/audio_dai.h>
+#include <dev/audio/audio_dai.h>
 #else
 typedef void *audio_dai_tag_t;
 #endif
@@ -62,6 +63,14 @@ struct fdt_attach_args {
 /* flags for fdtbus_intr_establish */
 #define FDT_INTR_MPSAFE	__BIT(0)
 
+/* Interrupt trigger types defined by the FDT "interrupts" bindings. */
+#define	FDT_INTR_TYPE_POS_EDGE		__BIT(0)
+#define	FDT_INTR_TYPE_NEG_EDGE		__BIT(1)
+#define	FDT_INTR_TYPE_DOUBLE_EDGE	(FDT_INTR_TYPE_POS_EDGE | \
+					 FDT_INTR_TYPE_NEG_EDGE)
+#define	FDT_INTR_TYPE_HIGH_LEVEL	__BIT(2)
+#define	FDT_INTR_TYPE_LOW_LEVEL		__BIT(3)
+
 struct fdtbus_interrupt_controller_func {
 	void *	(*establish)(device_t, u_int *, int, int,
 			     int (*)(void *), void *);
@@ -71,6 +80,10 @@ struct fdtbus_interrupt_controller_func {
 
 struct fdtbus_i2c_controller_func {
 	i2c_tag_t (*get_tag)(device_t);
+};
+
+struct fdtbus_spi_controller_func {
+	struct spi_controller *	(*get_controller)(device_t);
 };
 
 struct fdtbus_gpio_controller;
@@ -223,6 +236,12 @@ struct fdt_console_info {
 	const struct fdt_console *ops;
 };
 
+struct fdt_phandle_data {
+	int phandle;
+	int count;
+	const u_int *values;
+};
+
 #define	_FDT_CONSOLE_REGISTER(name)	\
 	__link_set_add_rodata(fdt_consoles, __CONCAT(name,_consinfo));
 
@@ -238,6 +257,8 @@ int		fdtbus_register_interrupt_controller(device_t, int,
 		    const struct fdtbus_interrupt_controller_func *);
 int		fdtbus_register_i2c_controller(device_t, int,
 		    const struct fdtbus_i2c_controller_func *);
+int		fdtbus_register_spi_controller(device_t, int,
+		    const struct fdtbus_spi_controller_func *);
 int		fdtbus_register_gpio_controller(device_t, int,
 		    const struct fdtbus_gpio_controller_func *);
 int		fdtbus_register_pinctrl_config(device_t, int,
@@ -269,9 +290,14 @@ int		fdtbus_get_reg_byname(int, const char *, bus_addr_t *,
 		    bus_size_t *);
 int		fdtbus_get_reg64(int, u_int, uint64_t *, uint64_t *);
 int		fdtbus_get_phandle(int, const char *);
+int		fdtbus_get_phandle_with_data(int, const char *, const char *,
+		    int, struct fdt_phandle_data *);
 int		fdtbus_get_phandle_from_native(int);
 i2c_tag_t	fdtbus_get_i2c_tag(int);
+i2c_tag_t	fdtbus_i2c_acquire(int, const char *);
 void *		fdtbus_intr_establish(int, u_int, int, int,
+		    int (*func)(void *), void *arg);
+void *		fdtbus_intr_establish_byname(int, const char *, int, int,
 		    int (*func)(void *), void *arg);
 void *		fdtbus_intr_establish_raw(int, const u_int *, int, int,
 		    int (*func)(void *), void *arg);
@@ -292,6 +318,14 @@ pwm_tag_t	fdtbus_pwm_acquire_index(int, const char *, int);
 void		fdtbus_pinctrl_configure(void);
 int		fdtbus_pinctrl_set_config_index(int, u_int);
 int		fdtbus_pinctrl_set_config(int, const char *);
+const char *	fdtbus_pinctrl_parse_function(int);
+const void *	fdtbus_pinctrl_parse_pins(int, int *);
+const char *	fdtbus_pinctrl_parse_groups(int, int *);
+const u_int *	fdtbus_pinctrl_parse_pinmux(int, int *);
+int		fdtbus_pinctrl_parse_bias(int, int *);
+int		fdtbus_pinctrl_parse_drive(int);
+int		fdtbus_pinctrl_parse_drive_strength(int);
+int		fdtbus_pinctrl_parse_input_output(int, int *);
 struct fdtbus_regulator *fdtbus_regulator_acquire(int, const char *);
 void		fdtbus_regulator_release(struct fdtbus_regulator *);
 int		fdtbus_regulator_enable(struct fdtbus_regulator *);
@@ -327,6 +361,7 @@ int		fdtbus_reset_deassert(struct fdtbus_reset *);
 struct fdtbus_phy *fdtbus_phy_get(int, const char *);
 struct fdtbus_phy *fdtbus_phy_get_index(int, u_int);
 void		fdtbus_phy_put(struct fdtbus_phy *);
+device_t	fdtbus_phy_device(struct fdtbus_phy *);
 int		fdtbus_phy_enable(struct fdtbus_phy *, bool);
 
 struct fdtbus_mmc_pwrseq *fdtbus_mmc_pwrseq_get(int);
@@ -341,6 +376,7 @@ void		fdtbus_power_reset(void);
 void		fdtbus_power_poweroff(void);
 
 device_t	fdtbus_attach_i2cbus(device_t, int, i2c_tag_t, cfprint_t);
+device_t	fdtbus_attach_spibus(device_t, int, cfprint_t);
 
 bool		fdtbus_set_data(const void *);
 const void *	fdtbus_get_data(void);
@@ -360,6 +396,7 @@ bool		fdtbus_status_okay(int);
 const void *	fdtbus_get_prop(int, const char *, int *);
 const char *	fdtbus_get_string(int, const char *);
 const char *	fdtbus_get_string_index(int, const char *, u_int);
+int		fdtbus_get_index(int, const char *, const char *, u_int *);
 
 void		fdt_add_bus(device_t, int, struct fdt_attach_args *);
 void		fdt_add_bus_match(device_t, int, struct fdt_attach_args *,
@@ -368,6 +405,7 @@ void		fdt_add_child(device_t, int, struct fdt_attach_args *, u_int);
 
 void		fdt_remove_byhandle(int);
 void		fdt_remove_bycompat(const char *[]);
+int		fdt_find_with_property(const char *, int *);
 int		fdtbus_print(void *, const char *);
 
 #endif /* _DEV_FDT_FDTVAR_H */

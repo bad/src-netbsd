@@ -1,4 +1,4 @@
-#	$NetBSD: bsd.x11.mk,v 1.127 2019/01/03 23:25:53 mrg Exp $
+#	$NetBSD: bsd.x11.mk,v 1.133 2019/09/13 10:23:07 maya Exp $
 
 .include <bsd.init.mk>
 
@@ -134,7 +134,7 @@ XORG_SERVER_MINOR=	10
 XORG_SERVER_TEENY=	6
 .else
 XORG_SERVER_MINOR=	20
-XORG_SERVER_TEENY=	3
+XORG_SERVER_TEENY=	5
 .endif
   
 XVENDORNAMESHORT=	'"X.Org"'
@@ -355,8 +355,14 @@ ${_pkg}.pc: ${PKGDIST.${_pkg}}/configure Makefile
 		s,@EXPAT_CFLAGS@,,; \
 		s,@FREETYPE_CFLAGS@,-I${X11ROOTDIR}/include/freetype2 -I${X11ROOTDIR}/include,;" \
 		-e '/^Libs:/ s%-L\([^ 	]*\)%-Wl,-rpath,\1 &%g' \
-		< ${.IMPSRC} > ${.TARGET}.tmp && \
-	mv -f ${.TARGET}.tmp ${.TARGET}
+		< ${.IMPSRC} > ${.TARGET}.tmp
+	if ${TOOL_GREP} '@.*@' ${.TARGET}.tmp; then \
+		echo "${.TARGET} matches @.*@, probably missing updates" 1>&2; \
+		false; \
+	else \
+		${MV} ${.TARGET}.tmp ${.TARGET}; \
+	fi
+
 
 CLEANFILES+= ${_PKGCONFIG_FILES} ${_PKGCONFIG_FILES:C/$/.tmp/}
 .endif
@@ -391,10 +397,15 @@ CLEANDIRFILES+= ${MAN:U${PROG:D${PROG.1}}}
 .SUFFIXES:	.man .man.pre .1 .3 .4 .5 .7
 
 _X11MANTRANSFORM= \
+	${X11EXTRAMANTRANSFORMS} \
 	__adminmansuffix__	8 \
 	__apploaddir__		${X11ROOTDIR}/lib/X11/app-defaults \
 	__appmansuffix__ 	1 \
 	__bindir__		${X11BINDIR} \
+	__datadir__		${X11LIBDIR} \
+	__libdir__		${X11ROOTDIR}/lib \
+	__xkbconfigroot__	${X11LIBDIR}/xkb \
+	__sysconfdir__		/etc \
 	__drivermansuffix__	4 \
 	__filemansuffix__	5 \
 	__LIB_MAN_SUFFIX__	3 \
@@ -403,8 +414,7 @@ _X11MANTRANSFORM= \
 	__mandir__		${X11MANDIR} \
 	__miscmansuffix__	7 \
 	__oslibmansuffix__	3 \
-	__projectroot__		${X11ROOTDIR} \
-	${X11EXTRAMANTRANSFORMS}
+	__projectroot__		${X11ROOTDIR}
 
 # Note the escaping trick for _X11MANTRANSFORM using % to replace spaces
 XORGVERSION=	'"X Version 11"'
@@ -413,7 +423,7 @@ _X11MANTRANSFORM+= \
 	__vendorversion__	${XORGVERSION:C/ /%/gW} \
 	__XCONFIGFILE__		xorg.conf \
 	__xconfigfile__		xorg.conf \
-	__XCONFIGFILEMAN__	'__XCONFIGFILE__%(__filemansuffix__)' \
+	__XCONFIGFILEMAN__	'xorg.conf(5)' \
 	__xorgversion__		${XORGVERSION:C/ /%/gW} \
 	__XSERVERNAME__		Xorg \
 	__xservername__		Xorg

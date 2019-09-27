@@ -1,4 +1,4 @@
-/*	$NetBSD: if_upgt.c,v 1.23 2018/11/15 10:56:30 maxv Exp $	*/
+/*	$NetBSD: if_upgt.c,v 1.26 2019/09/14 12:53:24 maxv Exp $	*/
 /*	$OpenBSD: if_upgt.c,v 1.49 2010/04/20 22:05:43 tedu Exp $ */
 
 /*
@@ -18,7 +18,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_upgt.c,v 1.23 2018/11/15 10:56:30 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_upgt.c,v 1.26 2019/09/14 12:53:24 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -239,6 +239,7 @@ upgt_attach(device_t parent, device_t self, void *aux)
 	 */
 	sc->sc_dev = self;
 	sc->sc_udev = uaa->uaa_device;
+	sc->sc_init_state = UPGT_INIT_NONE;
 
 	devinfop = usbd_devinfo_alloc(sc->sc_udev, 0);
 	aprint_normal_dev(sc->sc_dev, "%s\n", devinfop);
@@ -306,6 +307,7 @@ upgt_attach(device_t parent, device_t self, void *aux)
 	callout_setfunc(&sc->scan_to, upgt_next_scan, sc);
 	callout_init(&sc->led_to, 0);
 	callout_setfunc(&sc->led_to, upgt_set_led_blink, sc);
+	sc->sc_init_state = UPGT_INIT_INITED;
 
 	/*
 	 * Open TX and RX USB bulk pipes.
@@ -497,6 +499,9 @@ upgt_detach(device_t self, int flags)
 	int s;
 
 	DPRINTF(1, "%s: %s\n", device_xname(sc->sc_dev), __func__);
+
+	if (sc->sc_init_state < UPGT_INIT_INITED)
+		return 0;
 
 	s = splnet();
 
@@ -1841,8 +1846,7 @@ upgt_rx(struct upgt_softc *sc, uint8_t *data, int pkglen)
 	rxdesc = (struct upgt_lmac_rx_desc *)data;
 
 	/* create mbuf which is suitable for strict alignment archs */
-#define ETHER_ALIGN	0
-	m = m_devget(rxdesc->data, pkglen, ETHER_ALIGN, ifp);
+	m = m_devget(rxdesc->data, pkglen, 0, ifp);
 	if (m == NULL) {
 		DPRINTF(1, "%s: could not create RX mbuf\n",
 		   device_xname(sc->sc_dev));
